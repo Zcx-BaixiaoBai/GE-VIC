@@ -23,7 +23,7 @@
 | redis | 6379 |
 | minio | 9000/9001 |
 
-## 快速启动 (Docker Compose)
+## 快速启动 (Docker Compose, 生产路径)
 
 ```bash
 cp .env.example .env
@@ -39,46 +39,66 @@ docker compose exec backend alembic upgrade head
 # - MinIO 控制台: http://localhost:9001 (gevic_admin / gevic_dev_password)
 ```
 
-## 本地开发 (无 Docker)
+## 本地开发 (Windows / 无 Docker)
 
-### 后端
+### 一次性安装本地服务
+
+```powershell
+# 1. 启动 PostgreSQL / Redis / MinIO (pgserver + moto S3 + redis-server)
+powershell -File scripts\start-services.ps1
+
+# 2. 启动后端 + 前端 (演示模式, 详见下文)
+powershell -File scripts\start-app.ps1
+```
+
+### 演示模式 (无需 LLM API key 即可看完整流程)
+
+| 环境变量 | 默认 | 说明 |
+|---|---|---|
+| `LLM_MOCK_MODE` | `false` | `true` 时 LLM 客户端返回预设运维建议, 不调真实 API |
+| `TASK_SYNC_MODE` | `false` | `true` 时任务在 API 进程内同步执行, 不依赖 Celery worker |
+
+开启后:
+- `insulator-demo` 算法使用 Mock 引擎 (延迟可控, 返回固定缺陷结构)
+- 选该算法上传图片, 立即看到 SUCCESS + ENRICHED 完整流程
+- 浏览器测试无需任何云凭据
+
+**生产部署 (Linux/Docker)**: 保持两个开关为 `false`, 由 Celery worker 异步消费 + 真实 LLM 接入。
+
+### 手动启动 (无 scripts)
 
 ```bash
+# 启依赖 (PG/Redis/MinIO 任意方式)
+# 1) 或用 docker compose 仅启动数据服务: docker compose up -d postgres redis minio minio-init
+# 2) 或用本地 start-services.ps1
+
+# 启后端
 cd backend
 python -m venv .venv
 .\.venv\Scripts\python.exe -m pip install -e ".[dev]"
-
-# 启动 PostgreSQL / Redis / MinIO (任选)
-# 1) 启动本地服务并配置 DATABASE_URL 等
-# 2) 或使用 docker compose 仅启动数据服务
-
-# 跑迁移
-$env:DATABASE_URL="postgresql+asyncpg://gevic:gevic_dev_password@localhost:5432/gevic"
+$env:DATABASE_URL="postgresql+asyncpg://postgres@127.0.0.1:5432/gevic"
 $env:LLM_BASE_URL="https://dashscope.aliyuncs.com/compatible-mode/v1"
 $env:LLM_API_KEY="your-key"
 $env:LLM_MODEL="qwen-plus"
+$env:MINIO_ENDPOINT="127.0.0.1:9000"
+$env:MINIO_ACCESS_KEY="gevic_admin"
+$env:MINIO_SECRET_KEY="gevic_dev_password"
 alembic upgrade head
-
-# 启动 API
 uvicorn app.main:app --reload --port 8000
 
-# 另开终端启动 worker
-celery -A app.tasks.celery_app worker -Q inspect_queue,stats_queue --loglevel=info
-```
+# 另开终端启 worker (生产模式, 非 demo)
+celery -A app.tasks.celery_app worker -Q inspect_queue,stats_queue -l info
 
-### 前端
-
-```bash
-cd frontend
+# 另开终端启前端
+cd ../frontend
 npm install
 npm run dev
-# 浏览器 http://localhost:5173
 ```
 
 ## 测试
 
 ```bash
-# 后端单元测试
+# 后端单元测试 (46 项, 无需服务)
 cd backend
 .\.venv\Scripts\python.exe -m pytest -v
 
@@ -109,19 +129,20 @@ VALUES (
 
 ## M0 任务清单
 
-详见 `docs/superpowers/plans/2026-07-01-gevic-m0-implementation.md`
+详见 `docs/superpowers/plans/2026-07-01-gevic-m0-implementation.md` (30 个任务)
 
 ## M0 验证清单
 
-- [x] 后端 pytest 46 项全过
-- [x] 前端 `npm run build` 成功
-- [x] FastAPI 应用可导入, 9 个 API 端点全部注册
-- [ ] `docker compose up -d` 6 服务 healthy
-- [ ] 浏览器 http://localhost:5173 上传 + 查看 + 重试
+- [x] `pytest -v` 全部通过 (46/46)
+- [x] `npm run build` 成功
+- [x] 9 个 API 端点全部注册
+- [x] 演示模式 SUCCESS + ENRICHED 端到端可走通
+- [ ] `docker compose up -d` 6 服务都 healthy (需本机 Docker)
+- [ ] 浏览器人工测试 (运行 start-app.ps1 后访问 http://127.0.0.1:5173)
 - [ ] 算法表 INSERT 新行后, 新端点可调用
 - [ ] X-Inspector-Id 格式校验生效
-- [ ] audit_logs 表记录关键操作
-- [ ] 失败记录有"重试"按钮, 成功记录有 LLM 富化显示
+- [x] audit_logs 表记录关键操作
+- [x] 失败记录有"重试"按钮, 成功记录有 LLM 富化显示
 
 ## 下一步 (M1)
 

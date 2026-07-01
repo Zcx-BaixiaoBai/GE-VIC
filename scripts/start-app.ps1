@@ -14,29 +14,21 @@ $env:MINIO_SECURE = "false"
 $env:CELERY_BROKER_URL = "redis://127.0.0.1:6379/0"
 $env:PYTHONPATH = "."
 
-Write-Host "Starting GE-VIC services..." -ForegroundColor Green
+# Windows 演示模式: 跳过 Celery worker, 任务在 API 进程内直接跑
+# (生产部署用 Linux/Docker 时改回 false, 由 Celery worker 异步消费)
+$env:LLM_MOCK_MODE = "true"
+$env:TASK_SYNC_MODE = "true"
 
-# Backend
+Write-Host "Starting GE-VIC services (Windows demo mode)..." -ForegroundColor Green
+
 Start-Process -FilePath "$PSScriptRoot\..\backend\.venv\Scripts\python.exe" `
-    -ArgumentList "-m","uvicorn","app.main:app","--host","127.0.0.1","--port","8000","--reload" `
+    -ArgumentList "-m","uvicorn","app.main:app","--host","127.0.0.1","--port","8000" `
     -WorkingDirectory "$PSScriptRoot\..\backend" `
     -WindowStyle Hidden `
     -RedirectStandardOutput "$PSScriptRoot\..\backend.log" `
     -RedirectStandardError "$PSScriptRoot\..\backend.err"
 Write-Host "  backend: http://127.0.0.1:8000"
 
-Start-Sleep 2
-# Celery worker (Windows 需 -P solo -c 1 避免 prefork 权限问题)
-Start-Process -FilePath "$PSScriptRoot\..\backend\.venv\Scripts\python.exe" `
-    -ArgumentList "-m","celery","-A","app.tasks.celery_app","worker","-Q","inspect_queue,stats_queue","-P","solo","-c","1","--loglevel=info" `
-    -WorkingDirectory "$PSScriptRoot\..\backend" `
-    -WindowStyle Hidden `
-    -RedirectStandardOutput "$PSScriptRoot\..\worker.log" `
-    -RedirectStandardError "$PSScriptRoot\..\worker.err"
-Write-Host "  celery worker: started"
-
-Start-Sleep 2
-# Frontend
 $npmCmd = (Get-Command npm.cmd -ErrorAction SilentlyContinue).Source
 if ($npmCmd) {
     Start-Process -FilePath $npmCmd `
@@ -49,5 +41,12 @@ if ($npmCmd) {
 }
 
 Write-Host ""
-Write-Host "All services started. Open http://127.0.0.1:5173 in your browser." -ForegroundColor Green
+Write-Host "Demo mode enabled (LLM_MOCK_MODE=true, TASK_SYNC_MODE=true):" -ForegroundColor Yellow
+Write-Host "  - 使用 insulator-demo 算法 (Mock 引擎) 可看到完整 SUCCESS 流程" -ForegroundColor Yellow
+Write-Host "  - LLM 富化返回预设的运维建议 (无需真实 LLM API key)" -ForegroundColor Yellow
+Write-Host "  - 任务在 API 进程内同步执行 (不依赖 Celery worker)" -ForegroundColor Yellow
+Write-Host ""
+Write-Host "Open http://127.0.0.1:5173 in your browser." -ForegroundColor Green
 Write-Host "API docs: http://127.0.0.1:8000/docs" -ForegroundColor Green
+Write-Host ""
+Write-Host "Logs: backend.log, frontend.log (in repo root)" -ForegroundColor Yellow
