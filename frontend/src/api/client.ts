@@ -28,6 +28,7 @@ export interface Algorithm {
   description?: string | null
   version?: number
   engine_config?: Record<string, any>
+  request_schema?: Record<string, any> | null
 }
 
 export interface Inspection {
@@ -52,8 +53,39 @@ export interface Inspection {
   error?: { code?: string; message?: string } | null
 }
 
+export interface LLMConfig {
+  base_url: string
+  model: string
+  max_input_tokens: number
+  max_output_tokens: number
+  mock_mode: boolean
+}
+
+export interface LLMTestResult {
+  success: boolean
+  message: string
+  model?: string | null
+  content_preview?: string | null
+  prompt_tokens?: number | null
+  completion_tokens?: number | null
+  total_tokens?: number | null
+  duration_ms?: number | null
+}
+
 export const algorithmsApi = {
   list: () => api.get<{ items: Algorithm[]; total: number }>('/algorithms').then((r) => r.data),
+  listAll: (includeInactive = true) =>
+    api.get<Algorithm[]>('/admin/algorithms', { params: { include_inactive: includeInactive } }).then((r) => r.data),
+  create: (body: Partial<Algorithm>) =>
+    api.post<Algorithm>('/admin/algorithms', body).then((r) => r.data),
+  update: (code: string, body: Partial<Algorithm>) =>
+    api.patch<Algorithm>(`/admin/algorithms/${code}`, body).then((r) => r.data),
+  remove: (code: string) => api.delete(`/admin/algorithms/${code}`).then((r) => r.data),
+}
+
+export const settingsApi = {
+  getLLM: () => api.get<LLMConfig>('/settings/llm').then((r) => r.data),
+  testLLM: () => api.post<LLMTestResult>('/settings/llm/test').then((r) => r.data),
 }
 
 export const recordsApi = {

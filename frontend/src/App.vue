@@ -8,6 +8,7 @@
         <el-menu :default-active="route.path" router>
           <el-menu-item index="/">仪表盘</el-menu-item>
           <el-menu-item index="/upload">上传识别</el-menu-item>
+          <el-menu-item index="/settings">系统设置</el-menu-item>
         </el-menu>
       </el-aside>
       <el-main>

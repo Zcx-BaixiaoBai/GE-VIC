@@ -5,6 +5,7 @@ const router = createRouter({
   routes: [
     { path: '/', component: () => import('../views/Dashboard.vue') },
     { path: '/upload', component: () => import('../views/UploadView.vue') },
+    { path: '/settings', component: () => import('../views/SettingsView.vue') },
     { path: '/:pathMatch(.*)*', component: () => import('../views/NotFound.vue') },
   ],
 })
