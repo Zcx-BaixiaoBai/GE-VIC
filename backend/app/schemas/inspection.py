@@ -72,3 +72,41 @@ class EnrichOut(BaseModel):
     record_id: int
     enrichment_status: str
     message: str = "富化任务已提交"
+
+class AlgorithmUsage(BaseModel):
+    """algorithm usage stats"""
+    code: str
+    name: str | None = None
+    count: int
+
+
+class StatusBreakdown(BaseModel):
+    """status distribution"""
+    pending: int = 0
+    running: int = 0
+    success: int = 0
+    failed: int = 0
+    dead: int = 0
+
+
+class EnrichmentBreakdown(BaseModel):
+    """enrichment distribution"""
+    enriched: int = 0
+    enriching: int = 0
+    failed: int = 0
+    pending: int = 0
+
+
+class RecordStatsOut(BaseModel):
+    """record stats for dashboard"""
+    total: int
+    today_count: int
+    success_rate: float = Field(..., description="SUCCESS / total, 0-1")
+    failure_count: int
+    avg_duration_ms: float | None = Field(None, description="avg duration over SUCCESS records")
+    p95_duration_ms: int | None = Field(None, description="P95 duration over SUCCESS records")
+    enrichment_rate: float = Field(..., description="ENRICHED / SUCCESS, 0-1")
+    by_status: StatusBreakdown
+    by_enrichment: EnrichmentBreakdown
+    by_algorithm: list[AlgorithmUsage] = Field(default_factory=list)
+    window_days: int = 30

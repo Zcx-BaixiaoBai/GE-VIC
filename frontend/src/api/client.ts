@@ -72,6 +72,42 @@ export interface LLMTestResult {
   duration_ms?: number | null
 }
 
+
+export interface AlgorithmUsage {
+  code: string
+  name: string | null
+  count: number
+}
+
+export interface StatusBreakdown {
+  pending: number
+  running: number
+  success: number
+  failed: number
+  dead: number
+}
+
+export interface EnrichmentBreakdown {
+  enriched: number
+  enriching: number
+  failed: number
+  pending: number
+}
+
+export interface RecordStats {
+  total: number
+  today_count: number
+  success_rate: number
+  failure_count: number
+  avg_duration_ms: number | null
+  p95_duration_ms: number | null
+  enrichment_rate: number
+  by_status: StatusBreakdown
+  by_enrichment: EnrichmentBreakdown
+  by_algorithm: AlgorithmUsage[]
+  window_days: number
+}
+
 export const algorithmsApi = {
   list: () => api.get<{ items: Algorithm[]; total: number }>('/algorithms').then((r) => r.data),
   listAll: (includeInactive = true) =>
@@ -91,6 +127,7 @@ export const settingsApi = {
 export const recordsApi = {
   list: (params: Record<string, any> = {}) =>
     api.get<{ items: Inspection[]; total: number }>('/records', { params }).then((r) => r.data),
+  stats: () => api.get<RecordStats>('/records/stats').then((r) => r.data),
   get: (id: number) => api.get<Inspection>(`/records/${id}`).then((r) => r.data),
   upload: (code: string, file: File, meta: Record<string, any> = {}) => {
     const fd = new FormData()

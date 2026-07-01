@@ -9,10 +9,14 @@ from app.database import get_session
 from app.deps import get_inspector_id
 from app.models import Inspection
 from app.schemas.inspection import (
+    AlgorithmUsage,
+    EnrichmentBreakdown,
     EnrichOut,
     InspectionListOut,
     InspectionOut,
+    RecordStatsOut,
     RetryOut,
+    StatusBreakdown,
 )
 from app.services.audit import AuditAction, AuditResult, AuditService
 from app.tasks.celery_app import celery_app
@@ -97,6 +101,131 @@ async def list_records(
     total = total_result.scalar() or 0
 
     return InspectionListOut(items=items, total=total)
+
+
+@router.get("/stats", response_model=RecordStatsOut)
+async def get_record_stats(
+    inspector_id: Annotated[str, Depends(get_inspector_id)],
+    session: AsyncSession = Depends(get_session),
+) -> RecordStatsOut:
+    """Aggregate stats for the dashboard.
+
+    Computes counts by status, by algorithm, average/p95 duration over SUCCESS
+    records, today_count, success_rate, and enrichment coverage.
+    """
+    from datetime import datetime, timedelta, timezone
+    from app.models import Algorithm
+
+    # total
+    total = (await session.execute(select(func.count(Inspection.id)))).scalar() or 0
+
+    # today boundary
+    now = datetime.now(timezone.utc)
+    today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+
+    # by status
+    status_rows = (
+        await session.execute(
+            select(Inspection.status, func.count(Inspection.id)).group_by(Inspection.status)
+        )
+    ).all()
+    by_status = StatusBreakdown()
+    for st, cnt in status_rows:
+        if st == "PENDING":
+            by_status.pending = cnt
+        elif st == "RUNNING":
+            by_status.running = cnt
+        elif st == "SUCCESS":
+            by_status.success = cnt
+        elif st == "FAILED":
+            by_status.failed = cnt
+        elif st == "DEAD":
+            by_status.dead = cnt
+
+    success_count = by_status.success
+    failure_count = by_status.failed + by_status.dead
+    success_rate = (success_count / total) if total > 0 else 0.0
+
+    # today count
+    today_count = (
+        await session.execute(
+            select(func.count(Inspection.id)).where(Inspection.created_at >= today_start)
+        )
+    ).scalar() or 0
+
+    # avg / p95 duration (over SUCCESS records with duration_ms)
+    duration_rows = (
+        await session.execute(
+            select(Inspection.duration_ms)
+            .where(Inspection.status == "SUCCESS", Inspection.duration_ms.is_not(None))
+            .order_by(Inspection.duration_ms)
+        )
+    ).scalars().all()
+    avg_duration = None
+    p95_duration = None
+    if duration_rows:
+        avg_duration = sum(duration_rows) / len(duration_rows)
+        p95_idx = max(0, int(len(duration_rows) * 0.95) - 1)
+        p95_duration = duration_rows[p95_idx]
+
+    # enrichment stats (only over SUCCESS records)
+    enrich_rows = (
+        await session.execute(
+            select(Inspection.enrichment_status, func.count(Inspection.id))
+            .where(Inspection.status == "SUCCESS")
+            .group_by(Inspection.enrichment_status)
+        )
+    ).all()
+    by_enrichment = EnrichmentBreakdown()
+    enriched = 0
+    for es, cnt in enrich_rows:
+        if es == "ENRICHED":
+            by_enrichment.enriched = cnt
+            enriched = cnt
+        elif es == "ENRICHING":
+            by_enrichment.enriching = cnt
+        elif es == "ENRICH_FAILED":
+            by_enrichment.failed = cnt
+        else:
+            by_enrichment.pending += cnt
+    enrichment_rate = (enriched / success_count) if success_count > 0 else 0.0
+
+    # by algorithm (top 10)
+    algo_rows = (
+        await session.execute(
+            select(Inspection.algorithm_code, func.count(Inspection.id))
+            .group_by(Inspection.algorithm_code)
+            .order_by(func.count(Inspection.id).desc())
+            .limit(10)
+        )
+    ).all()
+    algo_codes = [r[0] for r in algo_rows]
+    algo_names = {}
+    if algo_codes:
+        name_rows = (
+            await session.execute(
+                select(Algorithm.code, Algorithm.name).where(Algorithm.code.in_(algo_codes))
+            )
+        ).all()
+        algo_names = {code: name for code, name in name_rows}
+    by_algorithm = [
+        AlgorithmUsage(code=code, name=algo_names.get(code), count=cnt)
+        for code, cnt in algo_rows
+    ]
+
+    return RecordStatsOut(
+        total=total,
+        today_count=today_count,
+        success_rate=success_rate,
+        failure_count=failure_count,
+        avg_duration_ms=avg_duration,
+        p95_duration_ms=p95_duration,
+        enrichment_rate=enrichment_rate,
+        by_status=by_status,
+        by_enrichment=by_enrichment,
+        by_algorithm=by_algorithm,
+        window_days=30,
+    )
 
 
 @router.get("/{record_id}", response_model=InspectionOut)
