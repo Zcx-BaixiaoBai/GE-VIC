@@ -1,4 +1,4 @@
-"""SQLAlchemy 异步引擎与 Session 工厂"""
+﻿"""SQLAlchemy 异步引擎与 Session 工厂"""
 from typing import AsyncIterator
 
 from sqlalchemy.ext.asyncio import (
@@ -43,6 +43,10 @@ def get_engine() -> AsyncEngine:
         settings = get_settings()
         _engine = create_engine(settings.database_url)
     return _engine
+
+
+# 别名, 避免与 app.engines.get_engine 冲突
+get_db_engine = get_engine
 
 
 def get_global_sessionmaker() -> async_sessionmaker[AsyncSession]:

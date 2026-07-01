@@ -1,4 +1,4 @@
-﻿"""POST /api/v1/inspect/{code} - 核心上传端点"""
+﻿"""POST /api/v1/inspect/{code} - 鏍稿績涓婁紶绔偣"""
 import hashlib
 import json
 import logging
@@ -37,8 +37,7 @@ async def inspect(
     registry: AlgorithmRegistry = Depends(get_registry),
     session: AsyncSession = Depends(_session_dep),
 ) -> InspectionCreateOut:
-    """上传文件并提交识别任务"""
-    # 1. 校验 inspector id
+    """Upload file and submit inspection task."""
     try:
         from app.utils.inspector_id import validate_inspector_id
         inspector_id = validate_inspector_id(x_inspector_id)
@@ -48,7 +47,6 @@ async def inspect(
             detail={"code": "INVALID_INSPECTOR_ID", "message": str(e)},
         )
 
-    # 2. 校验算法
     algo = registry.get(algorithm_code)
     if algo is None:
         raise HTTPException(
@@ -59,7 +57,6 @@ async def inspect(
             },
         )
 
-    # 3. 解析 meta
     try:
         meta_dict = json.loads(meta) if meta else {}
         if not isinstance(meta_dict, dict):
@@ -70,7 +67,6 @@ async def inspect(
             detail={"code": "INVALID_META", "message": str(e)},
         )
 
-    # 4. 读取文件并校验
     file_bytes = await file.read()
     settings = get_settings()
     max_size = settings.max_image_size
@@ -89,7 +85,6 @@ async def inspect(
             detail={"code": "EMPTY_FILE", "message": "Uploaded file is empty"},
         )
 
-    # 5. 推断文件类型
     filename = file.filename or "upload.bin"
     ext = filename.rsplit(".", 1)[-1].lower() if "." in filename else ""
     image_exts = {"jpg", "jpeg", "png", "bmp", "webp", "gif"}
@@ -101,7 +96,6 @@ async def inspect(
     else:
         file_type = "other"
 
-    # 6. 先写 inspections PENDING 记录
     inspection = Inspection(
         algorithm_code=algorithm_code,
         category=algo.category,
@@ -124,7 +118,6 @@ async def inspect(
     await session.flush()
     record_id = inspection.id
 
-    # 7. 上传到 MinIO
     content_type = file.content_type or "application/octet-stream"
     storage = StorageService.from_settings(settings)
     try:
@@ -160,17 +153,7 @@ async def inspect(
             detail={"code": "STORAGE_ERROR", "message": str(e)},
         )
 
-    # 8. 投递 Celery 任务
-    try:
-        celery_app.send_task(
-            "app.tasks.inspection.run_inspection",
-            kwargs={"record_id": record_id},
-            queue="inspect_queue",
-        )
-    except Exception as e:
-        logger.exception("Celery enqueue failed (record will be picked up by next worker)")
-
-    # 9. 写 audit log
+    # 鍏堝啓 audit log + 鎻愪氦, 鍐嶆姇閫掍换鍔?(閬垮厤浠诲姟璇讳笉鍒版湭鎻愪氦璁板綍)
     audit = AuditService(session)
     await audit.log(
         actor=inspector_id,
@@ -183,8 +166,28 @@ async def inspect(
         request_meta={"algorithm_code": algorithm_code, "file_size": len(file_bytes)},
         result=AuditResult.SUCCESS,
     )
-
     await session.commit()
+
+    # 鍚屾妯″紡: 鍦?API 杩涚▼鍐呯洿鎺ヨ窇浠诲姟 (await 閬垮厤 event loop 鍐茬獊)
+    await session.close()  # Release connection before running task
+
+    if settings.task_sync_mode:
+        from app.tasks.inspection import _run_inspection_async
+        try:
+            logger.info("Running task in sync mode for record_id=%s", record_id)
+            await _run_inspection_async(record_id)
+        except Exception as e:
+            logger.exception("Sync task execution failed")
+    else:
+        # 寮傛妯″紡: 鎶曢€?Celery 浠诲姟 (worker 寮傛娑堣垂)
+        try:
+            celery_app.send_task(
+                "app.tasks.inspection.run_inspection",
+                kwargs={"record_id": record_id},
+                queue="inspect_queue",
+            )
+        except Exception as e:
+            logger.exception("Celery enqueue failed (record will be picked up by next worker)")
 
     return InspectionCreateOut(
         record_id=record_id,

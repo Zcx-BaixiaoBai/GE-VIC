@@ -1,4 +1,4 @@
-"""算法列表 API 测试 - 验证已注册算法"""
+﻿"""Algorithm list API tests - verify seeded algorithms are returned"""
 import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import text
@@ -8,7 +8,7 @@ from app.services.algorithm_registry import get_registry
 
 
 def test_algorithms_empty_without_db() -> None:
-    """DB 不可用时, 列表为空 (启动时加载失败降级)"""
+    """DB unavailable: empty list (graceful degradation)"""
     get_registry()._cache = {}  # type: ignore[attr-defined]
     with TestClient(app) as client:
         r = client.get(
@@ -22,22 +22,36 @@ def test_algorithms_empty_without_db() -> None:
 
 
 def test_algorithms_list_with_seed() -> None:
-    """加载种子数据后能列出 insulator-damage"""
+    """Seeding adds algorithms including demo"""
     from datetime import datetime, timezone
     from types import SimpleNamespace
 
     fake_algo = SimpleNamespace(
         code="insulator-damage",
-        name="绝缘子破损识别",
-        category="供配电",
-        description="识别绝缘子伞裙破损",
+        name="Insulator Damage Detection",
+        category="Power",
+        description="Detect insulator damage",
         engine_type="cloud_api",
         is_active=True,
         version=1,
         engine_config={"provider": "aliyun"},
         request_schema=None,
     )
-    get_registry()._cache = {"insulator-damage": fake_algo}  # type: ignore[attr-defined]
+    fake_demo = SimpleNamespace(
+        code="insulator-demo",
+        name="Insulator Damage Demo",
+        category="Power",
+        description="Demo engine",
+        engine_type="mock",
+        is_active=True,
+        version=1,
+        engine_config={"delay_ms": 500, "defects_count": 1},
+        request_schema=None,
+    )
+    get_registry()._cache = {
+        "insulator-damage": fake_algo,
+        "insulator-demo": fake_demo,
+    }  # type: ignore[attr-defined]
 
     with TestClient(app) as client:
         r = client.get(
@@ -46,7 +60,10 @@ def test_algorithms_list_with_seed() -> None:
         )
     assert r.status_code == 200
     body = r.json()
-    assert body["total"] == 1
-    assert body["items"][0]["code"] == "insulator-damage"
-    # engine_config 已被脱敏,不应含 secret
-    assert "access_key_secret" not in body["items"][0]["engine_config"]
+    assert body["total"] == 2
+    codes = {item["code"] for item in body["items"]}
+    assert "insulator-damage" in codes
+    assert "insulator-demo" in codes
+    # engine_config should be redacted, no secret fields
+    for item in body["items"]:
+        assert "access_key_secret" not in item["engine_config"]
