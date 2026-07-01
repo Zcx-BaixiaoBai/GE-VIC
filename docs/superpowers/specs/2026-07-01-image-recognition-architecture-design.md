@@ -1,7 +1,32 @@
-﻿# 图像识别架构设计规范 V1.1
+﻿# 图像识别架构设计规范 V1.2
+
+如对本规范有任何疑问或建议，请在评审记录表中填写，版本变更将通过变更记录表追溯。
+
+### 13.7 未来集成说明（V1.2 新增）
+
+本系统设计为可作为**大平台的子模块**独立部署。**鉴权、API 网关、多租户等横切关注点由大平台统一处理**，本系统仅实现核心业务能力。
+
+| 能力 | 本系统是否做 | 由谁提供 |
+|---|---|---|
+| 用户鉴权（SSO/OAuth） | **不做** | 大平台 |
+| API 网关（限速/熔断） | **不做** | 大平台 |
+| 多租户隔离 | **不做** | 大平台 |
+| 审计日志收集 | 本系统写本地文件 | 大平台集中采集 |
+| 监控告警通道（钉钉/邮件） | 本系统只暴露 Prometheus 指标 | 大平台统一告警 |
+| 文件存储（MinIO） | 本系统自管 | 并入时迁移到统一 OSS |
+| 业务核心能力（识别/富化/报告） | **本系统做** | — |
+
+**集成时**：
+- 大平台网关统一代理到本系统 API
+- `X-Inspector-Id` 等业务标识由大平台网关注入
+- 本系统的 MinIO/PostgreSQL 迁移到大平台统一存储
+- 监控指标对接大平台 Prometheus
+
+
+# 图像识别架构设计规范 V1.2
 
 > **项目名称**：GE-VIC 图像识别平台
-> **文档版本**：1.1
+> **文档版本**：1.2
 > **编制日期**：2026-07-01
 > **状态**：待多方评审
 > **保密级别**：内部
@@ -15,6 +40,8 @@
 | 版本 | 日期 | 变更内容 | 作者 |
 |---|---|---|---|
 | 1.0 | 2026-07-01 | 初稿，提交评审 | - |
+
+**Prompt 模板**：V1.0 硬编码在代码内（V1.2 简化，prompt_versions 表 V2.0 评估）。
 | 1.1 | 2026-07-01 | 评审前增补：① **取消鉴权**（端点由巡检员 App 内置写死，不由一线员工选择），§13 重写为"无鉴权模式"；② 增补**完整响应结构**（识别结果 + LLM 总结与建议 + 元数据身份），便于巡检员 App 解析，新增 §7.3.5；③ §6 数据模型新增 `llm_enrichment` JSONB 字段；④ §11 拆分为"逐条记录 LLM 富化（实时）"与"周期性 LLM 报告"两条路径；⑤ §1.3/§1.5 新增"无鉴权"与"响应自洽"目标和约束 | - |
 
 ### 0.2 评审记录
@@ -89,6 +116,40 @@ V1.0 版本**不包含**以下内容，避免范围蔓延：
 | **不实现用户鉴权** | 端点由 App 内置，安全由网络边界 + App 分发保障（见 §13） |
 | **响应必须自洽完整** | 巡检员 App 单次调用即可拿到该图的识别结果 + LLM 总结与建议 + 元数据，不依赖二次调用 |
 
+### 1.6 V1.0 极简边界（新增，V1.2 评审决策）
+
+V1.0 遵循"**先跑通、再完善**"原则，主动放弃以下特性以控制范围、保证 M0-M1 阶段 2 周可上线：
+
+**不做（V1.0 边界外）**：
+- ❌ 多用户/多租户/用户级鉴权（§13）
+- ❌ 算法管理后台 UI、Prompt 模板版本化/灰度
+- ❌ AI 对话（Function Calling）与流式响应
+- ❌ 定时清理任务、灾备方案、冷存储归档
+- ❌ Vue 之外的复杂前端方案（M0-M2 用 Vue 3 全家桶即可，详见 ADR-003）
+- ❌ 缩略图自动生成、复杂文件签名 URL 机制
+**Prompt 模板**：V1.0 硬编码在代码内（V1.2 简化，prompt_versions 表 V2.0 评估）。
+- ❌ K8s Secret / KMS / mTLS / ELK / 文件杀毒
+- ❌ 钉钉/邮件等告警通道（V1.0 只暴露 Prometheus 指标）
+
+**原因**：
+- 内部系统维护频率低，SQL/配置文件改一次的成本 < UI 建设成本
+- 二阶段特性（M2 之后）的抽象层会让 V1.0 代码背负历史包袱
+- 后续并入大系统时，这些横切关注点由大系统统一处理，本系统重做属于浪费
+
+这些特性在 V2.0 或并入大系统时再统一评估。
+
+### 1.7 V1.0 验收标准 SLO（新增）
+
+| 指标 | 目标 | 测量方式 | 备注 |
+|---|---|---|---|
+| 单图识别 P95 延迟（含队列） | < 30s | Prometheus histogram | 视频按 N 帧聚合 |
+| 上传接口 P95 延迟 | < 500ms | Prometheus histogram | 不含识别 |
+| **系统层端到端成功率** | > 99.5% | `gevic_inspections_total{status}` | 不含引擎本身识别失败 |
+| 系统可用性（工作时段 09:00-19:00） | > 99% | uptime 探针 | 约 6h/月停机可接受 |
+| LLM 富化失败不影响主任务 | 100%（硬约束） | 集成测试断言 | `enrichment_status` 独立 |
+
+**不做**：P99 / 99.9% / 多区域容灾 / 7×24 监控——内部系统负担不起云级 SLO。
+
 ---
 
 ## 2. 术语与缩略语
@@ -102,7 +163,7 @@ V1.0 版本**不包含**以下内容，避免范围蔓延：
 | 引擎适配器 (Engine Adapter) | 抽象不同识别引擎调用的统一接口层 |
 | 海康超脑 (Hikvision Brain) | 海康威视边缘智能分析设备，部分识别可在其上完成 |
 | LLM 报告 | 基于 LLM 对一段时间内识别记录的聚合分析输出 |
-| AI 对话 (AI Chat) | 基于识别记录数据的自然语言问答交互 |
+
 | 巡检员 (Inspector) | 现场使用 App 上传素材的工程人员 |
 | 算法端点 (Algorithm Endpoint) | 系统为每个算法暴露的固定 HTTP API 路径 |
 
@@ -136,7 +197,7 @@ V1.0 版本**不包含**以下内容，避免范围蔓延：
 │                       │                                           │
 │                       ▼                                           │
 │              ┌──────────────────┐                                 │
-│              │  管理看板 (Web)  │  ◀── 统计 / 报告 / AI 对话      │
+│              │  管理看板 (Web)  │  ◀── 统计 / 报告 / 详情        │
 │              └──────────────────┘                                 │
 └──────────────────────────────────────────────────────────────────┘
 ```
@@ -193,14 +254,14 @@ V1.0 版本**不包含**以下内容，避免范围蔓延：
    │  GET /api/v1/records?algorithm=...&status=SUCCESS           
    │  GET /api/v1/records/{id}                                   
    │  POST /api/v1/stats/report (生成本周报告)                   
-   │  POST /api/v1/chat (AI 对话)                                
+
    ▼                                                             
 [LLM Service]                                                    
    │  11. 聚合 SQL + 样本数据                                    
    │  12. 调 OpenAI 兼容 chat API                                
    │  13. 报告存 llm_reports / 流式响应给前端                     
    ▼                                                             
-[看板 UI] — 图表 / 报告 / 对话气泡                                
+[看板 UI] — 图表 / 报告 / 详情                                
 ```
 
 ---
@@ -258,6 +319,22 @@ class BaseEngine(ABC):
 
 ---
 
+
+### 4.5 关键架构决策记录（ADR）
+
+| 编号 | 决策 | 选择 | 备选 | 理由 |
+|---|---|---|---|---|
+| **ADR-001** | 任务队列 | Celery + Redis | RQ / Dramatiq | 生态成熟、文档全、招人易、坑少 |
+| **ADR-002** | 对象存储 | MinIO（**单桶** `gevic`） | 本地盘 / 直接用云存储 | 后续易迁 S3/OSS，接口标准；子目录区分 |
+| **ADR-003** | 前端技术栈 (M0-M2) | **Vue 3 + Vite + Element Plus + ECharts + Pinia + Vue Router** | FastAPI 模板 + HTMX | 用户决策：完整方案；再评估时机 = AI 对话(SSE)/复杂大屏需求出现时 |
+| **ADR-004** | LLM 厂商 | **全环境变量配置**（`base_url` / `api_key` / `model` / `max_input_tokens` / `max_output_tokens`） | 硬编码单一厂商 | 用户决策：自行配置；任何 OpenAI 兼容 API；无任何默认值硬编码 |
+| **ADR-005** | 富化触发位置 | Celery 任务内同步调用 | 独立队列 | 失败隔离、流程简单，后续可拆 |
+| **ADR-006** | 算法注册表刷新 | 启动加载 + 滚动重启 | LISTEN/NOTIFY / Redis pub/sub | 内部改算法月级，省 2-3 天开发量 |
+| **ADR-007** | 前端再评估时机 | AI 对话(SSE) / 复杂大屏需求出现时 | 仅业务量增长 | 触发条件与"前端能力边界"挂钩，与"算法数量"解耦 |
+
+**ADR 变更规则**：任何对上述决策的修改需更新本表 + 重新评审。
+
+---
 ## 5. 模块详细设计
 
 ### 5.1 接入层 (Ingest API)
@@ -349,6 +426,13 @@ def run_inspection(self, record_id: int):
 
 **重试策略**：指数退避 10s → 30s → 90s，超过 3 次入死信队列 + 标记 `FAILED`。
 
+
+
+**临时文件策略**（V1.2 增补）：
+- Worker 从 MinIO 下载文件到 `tempfile.NamedTemporaryFile(delete=False)` 创建的本地文件
+- 任务完成后 `try/finally` 显式删除
+- 失败重试时重新下载（简单可靠）
+- **不引复杂的临时文件管理库**
 ### 5.5 数据持久层
 
 - **ORM**：SQLAlchemy 2.x（异步）
@@ -366,12 +450,8 @@ def run_inspection(self, record_id: int):
    - 组装 Prompt → 调 LLM → 存 `llm_reports`
    - 输出：Markdown + 结构化 JSON（总结/分析/建议）
 
-2. **流式对话**（POST `/api/v1/chat`）
-   - SSE 流式响应
-   - 工具调用：LLM 可通过 Function Calling 查询 DB（查记录、查统计）
-   - 会话与消息存 `chat_sessions` / `chat_messages`
 
-**Prompt 模板**：版本化（`prompt_versions` 表），可灰度切换。
+**Prompt 模板**：V1.0 硬编码在代码内（V1.2 简化，prompt_versions 表 V2.0 评估）。
 
 ### 5.7 管理看板 (Admin Web)
 
@@ -420,16 +500,27 @@ def run_inspection(self, record_id: int):
                          └──────────────────┘
 
 ┌──────────────────┐    ┌────────────────────┐
-│ chat_sessions    │◀──│  chat_messages     │
-│  id (PK)         │1:N │  id (PK)           │
-│  title           │    │  session_id (FK)   │
-│  created_at      │    │  role              │
-└──────────────────┘    │  content           │
-                        │  tool_calls        │
-                        │  created_at        │
-                        └────────────────────┘
 ```
 
+
+#### 6.1.1 inspections 状态机（V1.2 新增）
+
+```
+主任务 (status):
+  PENDING → RUNNING → SUCCESS
+                   → FAILED (可重试, 自动重试 ≤ 3 次)
+                   → DEAD   (超过 max_retries, 需手动干预)
+
+LLM 富化 (enrichment_status, 独立流转):
+  NONE → ENRICHING → ENRICHED
+                 → ENRICH_FAILED (可单独重试)
+```
+
+**关键约束**：
+- 重试期间 `status = RUNNING`（前端展示"识别中"，**不引入**独立的 `RETRYING` 状态）
+- `status`（主任务）与 `enrichment_status`（LLM 富化）是**两个独立维度**
+- 富化失败时，主 `status` 仍为 `SUCCESS`，`enrichment_status` 为 `ENRICH_FAILED`
+- `DEAD` 状态记录 `error_message` 供排查，前端显示"重试"按钮调用 `/records/{id}/retry`
 ### 6.2 表结构 (PostgreSQL 16+)
 
 ```sql
@@ -505,26 +596,26 @@ CREATE TABLE llm_reports (
 CREATE INDEX idx_reports_type ON llm_reports(report_type);
 CREATE INDEX idx_reports_created ON llm_reports(created_at DESC);
 
--- 6.2.4 LLM 对话会话
-CREATE TABLE chat_sessions (
+-- 6.2.4 审计日志（V1.2 新增, 事后追责用, 取代原 chat_* 表）
+CREATE TABLE audit_logs (
     id              BIGSERIAL PRIMARY KEY,
-    title           VARCHAR(256),
-    created_by      VARCHAR(64),
-    created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
-    updated_at      TIMESTAMPTZ NOT NULL DEFAULT now()
+    occurred_at     TIMESTAMPTZ NOT NULL DEFAULT now(),
+    actor           VARCHAR(64) NOT NULL,
+    action          VARCHAR(32) NOT NULL,
+    resource_type   VARCHAR(32) NOT NULL,
+    resource_id     VARCHAR(64),
+    source_ip       INET,
+    user_agent      VARCHAR(256),
+    request_id      VARCHAR(64),
+    request_meta    JSONB,
+    result          VARCHAR(16) NOT NULL,
+    error_code      VARCHAR(64)
 );
+CREATE INDEX idx_audit_actor ON audit_logs(actor, occurred_at DESC);
+CREATE INDEX idx_audit_resource ON audit_logs(resource_type, resource_id);
+CREATE INDEX idx_audit_action ON audit_logs(action, occurred_at DESC);
 
-CREATE TABLE chat_messages (
-    id              BIGSERIAL PRIMARY KEY,
-    session_id      BIGINT NOT NULL REFERENCES chat_sessions(id) ON DELETE CASCADE,
-    role            VARCHAR(16) NOT NULL,         -- 'system' | 'user' | 'assistant' | 'tool'
-    content         TEXT NOT NULL,
-    tool_calls      JSONB,                        -- assistant 调用的工具
-    tool_call_id    VARCHAR(64),                  -- 对应 tool 消息
-    token_used      INT,
-    created_at      TIMESTAMPTZ NOT NULL DEFAULT now()
-);
-CREATE INDEX idx_msg_session ON chat_messages(session_id, created_at);
+-- 注: 原 §6.2.5 engine_calls 表保留（运维排障用, 区别于审计日志）
 
 -- 6.2.5 引擎调用审计 (可选, V1.0 简化)
 CREATE TABLE engine_calls (
@@ -557,8 +648,8 @@ CREATE INDEX idx_engine_calls_record ON engine_calls(record_id);
 | `inspections` 元数据 | 永久 | 不清理 |
 | MinIO 原文件 | 至少 1 年（按合规） | 定时任务转储到冷存储 |
 | `engine_calls` 审计 | 90 天 | 定时清理 |
-| `chat_messages` | 180 天 | 定时清理 |
-| Celery 结果 | 7 天 | Redis 自动过期 |
+| `audit_logs` | 永久 | 不清理（合规要求） |
+| Celery 任务结果 | 不保留 | 无 result_backend，状态走 DB |
 
 ---
 
@@ -589,11 +680,11 @@ CREATE INDEX idx_engine_calls_record ON engine_calls(record_id);
 | GET | `/api/v1/stats/reports` | 报告列表 |
 | GET | `/api/v1/stats/reports/{id}` | 报告详情 |
 | GET | `/api/v1/stats/aggregate` | 纯统计聚合（看板用，不调 LLM） |
-| POST | `/api/v1/chat/sessions` | 创建对话 |
-| GET | `/api/v1/chat/sessions` | 对话列表 |
-| GET | `/api/v1/chat/sessions/{id}/messages` | 历史消息 |
-| POST | `/api/v1/chat/sessions/{id}/messages` | 发送消息（SSE 流式响应） |
-| DELETE | `/api/v1/chat/sessions/{id}` | 删除对话 |
+| POST | `/api/v1/records/{id}/enrich` | 触发 LLM 富化重试（V1.2 新增） |
+
+
+
+
 
 ### 7.3 核心端点详述
 
@@ -713,145 +804,6 @@ CREATE INDEX idx_engine_calls_record ON engine_calls(record_id);
 
 **Response 202**（异步模式）：返回 `job_id`，前端轮询。
 
-#### 7.3.4 POST /api/v1/chat/sessions/{id}/messages
-
-**Request**：
-
-```json
-{ "content": "请分析最近一周的绝缘子破损趋势" }
-```
-
-**Response**：SSE 流式
-
-```
-event: message
-data: {"delta": "根据", "done": false}
-
-event: message
-data: {"delta": "最近一周", "done": false}
-
-...
-
-event: message
-data: {"delta": "", "done": true, "message_id": 1024, "tool_calls": [...]}
-```
-
-
-### 7.3.5 完整响应结构（识别结果 + LLM 富化 + 元数据）
-
-**核心约定**：本系统对巡检员 App 的所有相关响应（上传、查询、单条详情），必须**自洽**地包含该图的：
-
-1. **识别结果** — 算法引擎返回的结构化结果
-2. **LLM 富化** — 在识别结果基础上由 LLM 生成的一句话总结 + 处置建议
-3. **完整元数据** — 用于 App 与上传请求关联、回溯展示
-
-App 单次调用即可完成解析、归档与展示，无需二次拼接。
-
-#### 7.3.5.1 通用响应 Schema（GET `/api/v1/records/{id}` 或 `?wait=true` 同步返回）
-
-```json
-{
-  "record_id": 1024,
-  "algorithm_code": "insulator-damage",
-  "algorithm_name": "绝缘子破损识别",
-  "category": "供配电",
-
-  "status": "SUCCESS",
-  "created_at":  "2026-07-01T10:00:00Z",
-  "started_at":  "2026-07-01T10:00:01Z",
-  "finished_at": "2026-07-01T10:00:12Z",
-  "duration_ms": 11000,
-
-  "meta": {
-    "inspector_id": "INSP-001",
-    "asset_id":     "BJ-SUBSTATION-001",
-    "location":     {"lat": 39.9, "lng": 116.4},
-    "client_meta":  {"voltage_level": "110kV", "remark": "雨后巡检"}
-  },
-
-  "file": {
-    "object_key": "inspections/2026/07/01/1024/photo.jpg",
-    "file_url":   "https://minio.local/gevic-raw/.../photo.jpg?X-Amz-Signature=...",
-    "file_hash":  "sha256:abc123...",
-    "file_size":  1024000,
-    "file_type":  "image/jpeg"
-  },
-
-  "recognition": {
-    "defects": [
-      {
-        "type": "破损",
-        "confidence": 0.92,
-        "bbox": [10, 20, 100, 200],
-        "severity": "high",
-        "description": "绝缘子伞裙破损"
-      }
-    ],
-    "raw": { /* 引擎原始返回 */ }
-  },
-
-  "llm_enrichment": {
-    "summary": "检测到 1 处绝缘子破损（高置信度 92%），位于图像右上区域。",
-    "recommendations": [
-      "建议立即安排现场核查并更换破损绝缘子",
-      "对同类批次设备进行专项巡检"
-    ],
-    "model":          "qwen-plus",
-    "prompt_version": "v1.0",
-    "token_used":     380,
-    "generated_at":   "2026-07-01T10:00:12Z"
-  },
-
-  "error": null
-}
-```
-
-#### 7.3.5.2 失败时响应
-
-```json
-{
-  "record_id": 1024,
-  "algorithm_code": "insulator-damage",
-  "status": "FAILED",
-  "created_at":  "2026-07-01T10:00:00Z",
-  "finished_at": "2026-07-01T10:00:30Z",
-  "duration_ms": 29000,
-  "meta":   { "inspector_id": "INSP-001", "asset_id": "..." },
-  "file":   { "object_key": "...", "file_url": "...", "file_hash": "...", "file_type": "image/jpeg" },
-  "recognition": null,
-  "llm_enrichment": null,
-  "error": {
-    "code": "ENGINE_TIMEOUT",
-    "message": "云 API 调用超时（>30s）",
-    "details": { "engine": "aliyun", "endpoint": "RecognizeInsulatorDamage" }
-  }
-}
-```
-
-#### 7.3.5.3 字段稳定性保证
-
-- 所有字段命名采用 `snake_case`，保持稳定
-- 任何字段的**新增**对旧版 App 是非破坏性的（App 忽略未知字段即可）
-- 任何字段的**重命名/删除/类型变更**需走文档变更记录（§0.1）并提前通知 App 联调方
-- App 解析策略：忽略未知字段；必填字段缺失视为该条数据不可用
-
-#### 7.3.5.4 上传即返回完整结果（同步模式）
-
-为简化 App 集成，可使用**同步等待**模式：
-
-```
-POST /api/v1/inspect/insulator-damage?wait=true&timeout=30
-```
-
-服务端在 `timeout` 秒内阻塞等待任务完成，超时则返回当前状态。响应结构与 §7.3.5.1 一致，但 `status` 可能是 PENDING/RUNNING/SUCCESS/FAILED 中任一。
-
-> **App 推荐用法**：
-> - **简单场景**（网络好、识别 < 30s）：用 `?wait=true&timeout=30` 一次拿到完整结果
-> - **复杂场景**（弱网/视频）：用 202 异步模式 + 轮询 `GET /api/v1/records/{id}`
-
-#### 7.3.5.5 列表查询响应
-
-`GET /api/v1/records` 返回列表时，每条记录采用**精简版**响应（不含 `recognition.raw` 与 `file_url`），减少响应体积；如需完整响应，调 `GET /api/v1/records/{id}`。
 ### 7.4 错误码统一格式
 
 ```json
@@ -1046,32 +998,32 @@ def get_engine(engine_type: str) -> BaseEngine:
 ```python
 # celery_config.py (摘要)
 broker_url = "redis://redis:6379/0"
-result_backend = "redis://redis:6379/1"
+# result_backend: V1.0 不需要（任务结果走 DB, 状态可查 inspections 表）
 
 task_routes = {
     "app.tasks.run_inspection": {"queue": "inspect_queue"},
     "app.tasks.run_llm_report": {"queue": "stats_queue"},
-    "app.tasks.run_llm_chat":    {"queue": "stats_queue"},
+
     "app.tasks.cleanup":         {"queue": "cleanup_queue"},
 }
 
 task_annotations = {
     "app.tasks.run_inspection": {"rate_limit": "200/m"},
     "app.tasks.run_llm_report": {"rate_limit": "10/m"},
-    "app.tasks.run_llm_chat":   {"rate_limit": "20/m"},
+
 }
 ```
 
 ### 10.2 启动命令
 
 ```bash
-# Worker
-celery -A app.worker worker -Q inspect_queue --concurrency=8 -l info
-celery -A app.worker worker -Q stats_queue --concurrency=2 -l info
-celery -A app.worker worker -Q cleanup_queue --concurrency=1 -l info
+# 单 worker 多队列 (V1.2 简化)
+celery -A app.worker worker \
+  -Q inspect_queue,stats_queue,cleanup_queue \
+  --concurrency=8 \
+  -l info
 
-# Beat (定时任务)
-celery -A app.worker beat -l info
+# V1.0 不需要 beat (无定时任务)
 ```
 
 ### 10.3 重试与死信
@@ -1146,21 +1098,6 @@ def run_inspection(self, record_id: int):
 ## 四、关键发现 (高亮重点资产/隐患)
 
 请用中文输出, 数字要有依据, 建议要可执行。
-```
-
-#### 11.2.2 AI 对话系统提示词
-
-```markdown
-你是 GE-VIC 巡检数据 AI 助手, 可访问以下工具:
-- query_inspections(filters, limit)  // 查询识别记录
-- get_aggregate_stats(scope)         // 获取聚合统计
-- get_recent_reports(limit)          // 获取历史报告
-
-回答时:
-1. 优先调用工具获取真实数据, 不要凭印象回答
-2. 数据结论要给出具体数字和依据
-3. 建议要可执行
-4. 不知道的请说"没有相关数据"
 ```
 
 ### 11.3 逐条记录 LLM 富化（实时，V1.0 必选）
@@ -1245,51 +1182,44 @@ def run_inspection(self, record_id: int):
 4. 前端: 同步模式直接渲染 / 异步模式轮询
 ```
 
-### 11.5 AI 对话（Function Calling）
-
-- 维护一组工具函数（DB 查询、统计聚合、报告查询）
-- LLM 决定调用哪个工具 → 后端执行 → 结果回传 LLM → LLM 组织自然语言回答
-- 工具调用结果存 `chat_messages.tool_calls`
-
-### 11.6 成本与限速
+### 11.5 成本与限速
 
 - **每日 token 上限**（环境变量 `LLM_DAILY_TOKEN_LIMIT`，默认 5M）
 - **每分钟请求数**（Celery rate_limit，默认 10/m）
 - **报告生成频率限制**（同一 scope 5 分钟内不重复生成）
 - **每次报告预估**：输入 ~3K tokens，输出 ~2K tokens
-- **成本追踪**：`llm_reports.cost_usd` + `chat_messages.token_used`
+- **成本追踪**：`llm_reports.cost_usd` + `inspections.llm_enrichment.token_used`
 
 ---
 
-## 12. 存储策略
+## 12. 存储策略（V1.2 简化）
 
-### 12.1 MinIO 桶设计
+### 12.1 MinIO 单桶设计
 
-| 桶 | 用途 | 访问策略 |
-|---|---|---|
-| `gevic-raw` | 原始上传文件 | 私有，通过签名 URL 访问 |
-| `gevic-thumb` | 缩略图 (V1.1 增强) | 私有 |
-| `gevic-export` | 导出文件 (V1.1 增强) | 私有 |
+- **桶名**：`gevic`（V1.2 改为单桶，ADR-002）
+- **访问策略**：私有，仅内网访问
+- **目录结构**：`inspections/{yyyy}/{mm}/{dd}/{record_id}/{filename}`
+- V1.0 不引冷存储 / 缩略图 / 多桶
 
 ### 12.2 文件命名
 
 ```
-gevic-raw/
-  inspections/
-    {yyyy}/{mm}/{dd}/{record_id}/{filename}
+gevic/inspections/2026/07/01/1024/photo.jpg
 ```
 
 **去重**：`file_hash` (SHA256) 唯一索引，重复上传直接复用。
 
-### 12.3 签名 URL
+### 12.3 文件访问
 
-- 默认有效期 15 分钟
-- 前端通过 `GET /api/v1/records/{id}/file` 获取签名 URL
+- V1.0 用 **Nginx 反向代理 + 简单 token**（不走 S3 签名 URL）
+- Token 有效期 15 分钟
+- 前端通过 `GET /api/v1/records/{id}/file` 获取访问 URL
+- 不引复杂的签名 URL 机制
 
 ### 12.4 保留与清理
 
 - 至少保留 1 年（合规要求）
-- 长期归档：V1.1 增强，可对接冷存储（如 AWS Glacier / 阿里云归档存储）
+- V1.0 **不引冷存储 / 定时清理**（手动清理即可）
 
 ---
 
@@ -1366,28 +1296,43 @@ gevic-raw/
 **关键日志事件**：
 - 上传接收 / 入队 / 任务开始 / 引擎调用 / 任务完成 / 失败重试
 
-### 14.3 监控指标 (Prometheus)
+### 14.3 监控指标 (Prometheus, V1.2 简化为 3 项)
 
-| 指标 | 类型 |
-|---|---|
-| `gevic_inspections_total{algorithm, status}` | Counter |
-| `gevic_inspection_duration_seconds{algorithm, engine}` | Histogram |
-| `gevic_queue_length{queue}` | Gauge |
-| `gevic_llm_token_used_total{operation}` | Counter |
-| `gevic_llm_cost_usd_total` | Counter |
-| `gevic_engine_call_errors_total{engine, error_type}` | Counter |
+| 指标 | 类型 | 用途 |
+|---|---|---|
+| `gevic_inspections_total{algorithm, status}` | Counter | 计数 + 成功率 |
+| `gevic_inspection_duration_seconds{algorithm, engine}` | Histogram | 延迟 P95 |
+| `gevic_engine_call_errors_total{engine, error_code}` | Counter | 错误率 |
 
-### 14.4 告警
+### 14.4 告警（V1.2 简化为 2 项）
 
-- 队列堆积 > 阈值
-- 引擎调用错误率 > 5%
-- LLM 调用失败率 > 10%
-- MinIO / PG / Redis 不可达
-- Celery worker 全部 down
+| 告警 | 触发条件 | 处置 |
+|---|---|---|
+| 依赖不可达 | PG / Redis / MinIO 健康检查失败 | 立即人工介入 |
+| Celery worker down | 所有 worker 进程消失 | 立即人工介入 + 自动重启 |
 
----
+> V1.0 不做：富化失败率告警、队列堆积告警、引擎错误率告警。SLO 由 §1.7 保障。
 
-## 15. 安全
+## 15. 安全（V1.2 简化）
+
+**内部系统下的真正安全需求**：`事后追责 > 事前拦截`。`n`n| 需求 | V1.0 实现 | 不做的事 |`n|---|---|---|`n| 文件类型校验 | MIME + 文件头 | 复杂文件杀毒 |`n| 凭据管理 | `.env` 文件（本地） | K8s Secret / KMS |`n| 数据脱敏 | LLM 输入字段白名单（代码层） | 人脸检测、自动化脱敏工具 |`n| 审计可追溯 | `audit_logs` 表（§6.2.4） | ELK 集中日志 |`n| 异常可发现 | Prometheus 指标 + 健康检查 | 复杂告警规则 |`n`n**关键判断**：`n- X-Inspector-Id 加最薄格式校验（`[A-Za-z0-9_-]{3,32}`）作为最薄护栏`n- "网络安全靠内网 + VPN"完全够；并入大系统时由大系统网关统一处理`n- 纵深防御（mTLS、设备指纹、请求签名）在 V1.0 阶段**完全不需要**`n`n（V1.2 简化）
+
+**内部系统下的真正安全需求**："事后追责 > 事前拦截"。
+
+| 需求 | V1.0 实现 | 不做的事 |
+|---|---|---|
+| 文件类型校验 | MIME + 文件头 | 复杂文件杀毒 |
+| 凭据管理 | `.env` 文件（本地） | K8s Secret / KMS |
+| 数据脱敏 | LLM 输入字段白名单（代码层） | 人脸检测、自动化脱敏工具 |
+| 审计可追溯 | `audit_logs` 表（§6.2.4） | ELK 集中日志 |
+| 异常可发现 | Prometheus 指标 + 健康检查 | 复杂告警规则 |
+
+**关键判断**：
+- X-Inspector-Id 加最薄格式校验（`[A-Za-z0-9_-]{3,32}`）作为最薄护栏
+- "网络安全靠内网 + VPN"完全够；并入大系统时由大系统网关统一处理
+- 纵深防御（mTLS、设备指纹、请求签名）在 V1.0 阶段**完全不需要**
+
+
 
 ### 15.1 文件上传安全
 
@@ -1412,32 +1357,20 @@ gevic-raw/
 
 ## 16. 部署
 
-### 16.1 本地开发（Docker Compose）
+### 16.1 本地开发（Docker Compose，V1.2 精简为 6 服务）
 
-```
-.
-├── docker-compose.yml          # 一键起全部服务
-├── .env.example                # 环境变量模板
-├── backend/
-│   ├── Dockerfile
-│   ├── pyproject.toml
-│   └── app/
-└── frontend/
-    ├── Dockerfile
-    └── package.json
-```
+`docker compose up -d` 起 6 个服务：
 
-`docker compose up -d` 起：
-- `postgres` (5432)
-- `redis` (6379)
-- `minio` (9000/9001)
-- `minio-init` (创建桶)
-- `backend` (FastAPI, 8000)
-- `worker-inspect` (Celery worker)
-- `worker-stats` (Celery worker)
-- `worker-cleanup` (Celery worker)
-- `beat` (Celery beat)
-- `frontend` (Vue dev server, 5173)
+| 服务 | 端口 | 说明 |
+|---|---|---|
+| `postgres` | 5432 | 元数据库 |
+| `redis` | 6379 | Celery broker（无 result_backend） |
+| `minio` | 9000/9001 | 对象存储（单桶 `gevic`） |
+| `minio-init` | - | 创建 `gevic` 桶的 init container |
+| `backend` | 8000 | FastAPI + Celery 单 worker 多队列（V1.2 合并） |
+| `frontend` | 5173 | Vue 3 dev server |
+
+**对比 V1.1（9 服务）**：合并 3 个 Celery worker（inspect/stats/cleanup）为 1 个；删除 beat。
 
 ### 16.2 云部署
 
@@ -1490,7 +1423,7 @@ V1.0 本地 → V1.0 云：
 ### 17.3 端到端测试 (Playwright)
 
 - 看板：访问 → 触发报告生成 → 查看报告
-- 看板：AI 对话多轮
+
 
 ### 17.4 性能与并发
 
@@ -1500,63 +1433,54 @@ V1.0 本地 → V1.0 云：
 
 ---
 
-## 18. 里程碑与交付计划
+## 18. 里程碑与交付计划（V1.2 重写：M0/M1/M2/M3+）
 
-### M1 — 核心链路（1–2 周）
+**总目标**：**2 周可上线 V1.0**（M0 + M1）。
 
-**目标**：1 个算法跑通端到端
+### M0 — 脚手架 + 1 个算法端到端（1 周）
 
-- [ ] 项目脚手架（docker-compose, FastAPI, Celery, PG, MinIO, Redis）
-- [ ] 数据库迁移（Alembic）+ 初始算法注册
-- [ ] FastAPI 接入层 + 单通配路由
-- [ ] MinIO 文件上传
-- [ ] Celery inspect_queue + run_inspection 任务
-- [ ] CloudVisionEngine 适配器（至少 1 个云 provider）
-- [ ] 算法注册表管理 SQL/脚本
-- [ ] 看板：仪表盘 + 记录查询 + 简单上传页
-- [ ] 基础日志 + 健康检查
-- [ ] 端到端测试 1 条
+**目标**：1 个算法跑通"上传 → 入队 → 识别 → 富化 → 入库 → 查询"完整链路
 
-**交付**：能上传 1 张图 → 看识别结果 → 在看板查到
+- [ ] docker-compose 一键起 PG/Redis/MinIO/FastAPI/Celery/Vue（6 服务）
+- [ ] `algorithms` / `inspections` / `audit_logs` 表 + Alembic 初始迁移 + 1 条种子算法
+- [ ] FastAPI 通配路由 + MinIO 上传 + `inspections` 写入（PENDING）
+- [ ] CloudVisionEngine 适配器（选 1 个云厂商）
+- [ ] Celery `run_inspection` 任务（含 LLM 富化，硬编码 Prompt 模板）
+- [ ] X-Inspector-Id 格式校验（`[A-Za-z0-9_-]{3,32}`） + `audit_logs` 写入
+- [ ] Vue 3 看板：列表 + 详情 + 上传 + 重试 + 富化重试（最小可用）
+- [ ] 端到端测试 5 条样本（覆盖正常/失败/重试/富化失败/格式校验拒绝）
 
-### M2 — 多算法 + 报告（1–2 周）
+**交付物**：能上传 1 张图 → 看到识别结果 + LLM 建议 + 元数据，5 分钟上手 demo
 
-- [ ] 增加 1–2 个算法（不同云 provider）
-- [ ] 算法管理后台 CRUD
-- [ ] 看板：报表中心 + 触发 LLM 报告
-- [ ] LLM 报告生成（同步 + 异步两种模式）
-- [ ] Prompt 模板 v1
-- [ ] 限速 + 成本统计
+### M1 — 多算法 + 报告（1 周）
 
-**交付**：可管理 2–3 个算法，可生成本周报告
+- [ ] 复制 M0 的适配器到 2-3 个算法（不同云厂商或同厂商不同接口）
+- [ ] LLM 报告生成（异步任务 + 看板查看 + 看板触发）
+- [ ] Vue 看板保留现状（不重构）
+- [ ] 3 个核心 Prometheus 指标 + 2 个告警（§14 V1.2 简化）
+- [ ] 极简监控（本地不部署 Grafana）
 
-### M3 — 海康超脑接入（1–2 周）
+**交付物**：3 个算法跑通，可生成周报；**V1.0 上线**
 
-- [ ] 海康超脑 PoC（确认文件级分析能力）
-- [ ] HikvisionBrainEngine 适配器
-- [ ] webhook 接收超脑结果（如支持）
-- [ ] 至少 1 个算法在超脑上跑通
-- [ ] 双引擎切换演示（云 API ↔ 超脑）
+### M2 — 海康超脑 PoC（1-2 周，风险驱动）
 
-**交付**：手动上传可走超脑识别
+- [ ] 单独 PoC 任务（参见 §9.3 / §21.2）
+- [ ] PoC 通过 → 进入 M3 规划
+- [ ] PoC 不通过 → V1.0 保持 M1 状态，海康方案延后到 V2.0
 
-### M4 — 规模化 + AI 对话（2–4 周）
+### M3+ — 规模化与并入（按需，业务驱动）
 
-- [ ] 批量注册 40+ 算法（脚本 + 管理后台）
-- [ ] 看板：算法管理 + 配置版本灰度
-- [ ] AI 对话（SSE 流式 + Function Calling）
-- [ ] 多用户/多 API Key
-- [ ] 监控告警 + 性能优化
-- [ ] 文档（API/运维/用户）
+**触发条件**（满足任一即启动）：
+- 业务方真实提出 40+ 算法需求
+- 出现 AI 对话（SSE 流式）/ 复杂大屏需求（前端再评估，ADR-007）
+- 并入大系统（横切关注点迁移到大系统）
 
-**交付**：40+ 算法在线，多用户可对话查询
+**M3+ 工作内容**：
+- 算法管理后台 UI（SQL 已不够用时）
+- AI 对话（Function Calling + SSE 流式）
+- K8s 部署 / 监控告警 / 灾备
 
-### M5+ — 云部署与生产化（按需）
-
-- [ ] K8s manifest / 云厂商托管服务
-- [ ] CI/CD
-- [ ] 灾备 / 多区域
-- [ ] 合规与审计
+**总周期**：M0 + M1 = **2 周可上线 V1.0**。这是"高可落地"应有的节奏。
 
 ---
 
@@ -1584,42 +1508,9 @@ V1.0 本地 → V1.0 云：
 5. **Q-OPEN-5**：是否需要支持视频抽帧识别（上传 1 个长视频，按 N 秒抽 N 帧分别识别后聚合）？V1.0 暂只支持整视频识别，后续增强
 6. **Q-OPEN-6（V1.1 已澄清）**：原计划升级到 OAuth2/JWT。**经评审决定 V1.0 不做用户鉴权**（见 §13），改为网络边界 + App 分发双层保障。如未来需要鉴权，参见 §13.5 触发条件。
 7. **Q-OPEN-7**：40+ 算法的清单与优先级 → 业务方提供
-8. **Q-OPEN-8**：看板是否需要权限分级（管理员/普通用户/只读）？**V1.0 简化不做**（与无鉴权模式一致），V2.0 考虑
+8. **Q-OPEN-8（V1.2 已答复）**：**V1.0 不做**（与无鉴权模式一致）。并入大系统后由大平台统一 RBAC。
 
-9. **Q-OPEN-9**：LLM 富化失败重试的 SLA 与告警阈值 — 是否需要「富化失败率超 X% 触发告警」？ 默认：失败率 > 5% 持续 5 分钟告警
-
----
-
-## 21. 附录
-
-### 21.1 完整 API 端点列表
-
-见 §7.2。
-
-### 21.2 海康超脑接入说明（PoC 任务清单）
-
-1. 准备内网测试超脑（与生产同型号或系列）
-2. 准备 5–10 张不同场景图片
-3. 尝试调用超脑的"文件分析"接口（如 `POST /ISAPI/Intelligent/analysisTask`），上传图片
-4. 观察：是否能返回识别结果？响应时间？支持哪些算法？
-5. 评估：能力、成本、稳定性、文档支持度
-6. 输出：PoC 报告，决定 M3 范围
-
-### 21.3 LLM Prompt 模板示例
-
-见 §11.2。
-
-### 21.4 术语表
-
-见 §2。
-
-### 21.5 参考资料
-
-- FastAPI 文档：https://fastapi.tiangolo.com/
-- Celery 文档：https://docs.celeryq.dev/
-- SQLAlchemy 2.x 异步：https://docs.sqlalchemy.org/en/20/orm/extensions/asyncio.html
-- MinIO 文档：https://min.io/docs/minio/linux/index.html
-- OpenAI API 兼容：https://platform.openai.com/docs/api-reference/chat
+9. **Q-OPEN-9（V1.2 已答复）**：**告警阈值定 5% 持续 5 分钟**（§14.4）。SLO 100% 不影响主任务（§1.7 硬约束）。
 
 ---
 
