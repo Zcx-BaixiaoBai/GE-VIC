@@ -1,7 +1,7 @@
-# 图像识别架构设计规范 V1.0
+﻿# 图像识别架构设计规范 V1.1
 
 > **项目名称**：GE-VIC 图像识别平台
-> **文档版本**：1.0
+> **文档版本**：1.1
 > **编制日期**：2026-07-01
 > **状态**：待多方评审
 > **保密级别**：内部
@@ -15,6 +15,7 @@
 | 版本 | 日期 | 变更内容 | 作者 |
 |---|---|---|---|
 | 1.0 | 2026-07-01 | 初稿，提交评审 | - |
+| 1.1 | 2026-07-01 | 评审前增补：① **取消鉴权**（端点由巡检员 App 内置写死，不由一线员工选择），§13 重写为"无鉴权模式"；② 增补**完整响应结构**（识别结果 + LLM 总结与建议 + 元数据身份），便于巡检员 App 解析，新增 §7.3.5；③ §6 数据模型新增 `llm_enrichment` JSONB 字段；④ §11 拆分为"逐条记录 LLM 富化（实时）"与"周期性 LLM 报告"两条路径；⑤ §1.3/§1.5 新增"无鉴权"与"响应自洽"目标和约束 | - |
 
 ### 0.2 评审记录
 
@@ -62,6 +63,8 @@
 5. **支持并发**：50–500 路并发上传、500–5 万条/天处理量，识别过程异步化、不阻塞上传。
 6. **AI 增强分析**：基于 LLM 对识别记录做聚合统计、趋势分析、决策建议输出。
 7. **本地可验证 / 云可部署**：先在本地 Docker Compose 跑通，云上可直接容器化部署。
+8. **无鉴权模式**（V1.0 起）：本系统不实现用户级鉴权。API 端点由业务方分发的巡检员 App 内置写死，不由一线员工选择；安全边界由**网络层**（内网/VPN）与**App 分发渠道**（签名包、版本管控）共同保障。详细说明见 §13。
+9. **定向返回完整结果**（V1.0 起）：对巡检员 App 的查询/上传响应，必须**一次性返回该图的完整识别结果 + LLM 总结与建议 + 完整元数据**，便于 App 解析后直接展示与归档，不要求 App 二次拼接。响应结构详见 §7.3.5。
 
 ### 1.4 非目标 (Non-Goals)
 
@@ -71,7 +74,7 @@ V1.0 版本**不包含**以下内容，避免范围蔓延：
 - ❌ 摄像头/IoT 设备直接管理 —— 沿用现有海康超脑侧
 - ❌ 巡检员移动端 App / 小程序 —— 沿用现有 App，本系统不重做
 - ❌ 自研识别模型训练 —— 沿用云 API 或外接超脑
-- ❌ 复杂的 RBAC / 多租户 —— V1.0 用 API Key + 用户标识
+- ❌ 复杂的 RBAC / 多租户 —— V1.0 不实现用户鉴权（详见 §13）
 - ❌ 视频内容审核 / 社交领域用法 —— 不在本系统范围
 
 ### 1.5 关键约束
@@ -83,6 +86,8 @@ V1.0 版本**不包含**以下内容，避免范围蔓延：
 | 初期算法 | 1–2 个验证，后续扩到 40+ |
 | LLM 接入 | 外部 API，OpenAI 兼容 chat 格式 |
 | 开发平台 | Windows（开发机） |
+| **不实现用户鉴权** | 端点由 App 内置，安全由网络边界 + App 分发保障（见 §13） |
+| **响应必须自洽完整** | 巡检员 App 单次调用即可拿到该图的识别结果 + LLM 总结与建议 + 元数据，不依赖二次调用 |
 
 ---
 
@@ -142,7 +147,7 @@ V1.0 版本**不包含**以下内容，避免范围蔓延：
 ┌──────────────────────────────────────────────────────────────────┐
 │ ① 接入层 (Ingest API) — FastAPI                                  │
 │    - 固定通配路由 POST /api/v1/inspect/{algorithm_code}          │
-│    - 算法注册表查询 + 鉴权 + 文件校验                            │
+│    - 算法注册表查询 + 文件校验（无鉴权, 见 §13）                            │
 │    - 同步入库 + 异步投递 + 202 返回                              │
 ├──────────────────────────────────────────────────────────────────┤
 │ ② 任务层 (Task Queue) — Celery + Redis                          │
@@ -172,18 +177,17 @@ V1.0 版本**不包含**以下内容，避免范围蔓延：
    │  POST /api/v1/inspect/insulator-damage (file, meta)           
    ▼                                                             
 [FastAPI 接入层]                                                 
-   │  1. 鉴权 (API Key)                                          
-   │  2. 查 algorithms 表 → 引擎配置                             
-   │  3. 文件上传 MinIO → object_key                             
-   │  4. inspections 表插入 PENDING 记录 → record_id             
-   │  5. Celery 投递 inspect_queue{record_id, ...}                
-   │  6. 202 Accepted {record_id, status: "PENDING"}             
+   │  1. 查 algorithms 表 → 引擎配置（无鉴权, 见 §13）       
+   │  2. 文件上传 MinIO → object_key                             
+   │  3. inspections 表插入 PENDING 记录 → record_id             
+   │  4. Celery 投递 inspect_queue{record_id, ...}                
+   │  5. 202 Accepted {record_id, status: "PENDING"}             
    ▼                                                             
 [Celery Worker]                                                  
-   │  7. 从 MinIO 下载文件                                       
-   │  8. engine.recognize() → 调 云API/超脑                      
-   │  9. 更新 inspections: status=SUCCESS, result=JSONB          
-   │  10. 失败 → 重试 3 次 → 死信 → status=FAILED               
+   │  6. 从 MinIO 下载文件                                       
+   │  7. engine.recognize() → 调 云API/超脑                      
+   │  8. 更新 inspections: status=SUCCESS, result=JSONB          
+   │  9. 失败 → 重试 3 次 → 死信 → status=FAILED               
    ▼                                                             
 [管理看板 / 第三方系统]                                          
    │  GET /api/v1/records?algorithm=...&status=SUCCESS           
@@ -259,13 +263,12 @@ class BaseEngine(ABC):
 ### 5.1 接入层 (Ingest API)
 
 **职责**：
-- 接收上传请求
-- 鉴权
+- 接收上传请求（**无鉴权**，详见 §13）
 - 校验算法 code 与元数据
 - 落盘文件（MinIO）
-- 写入 inspections 记录
+- 写入 inspections 记录（status=PENDING）
 - 投递 Celery 任务
-- 同步返回 record_id
+- 同步返回 `record_id` 与初始元数据
 
 **关键路径**：
 
@@ -284,10 +287,10 @@ class BaseEngine(ABC):
 ```
 POST /api/v1/inspect/insulator-damage
 Headers:
-  Authorization: Bearer <api_key>
-  X-Inspector-Id: <inspector_id>      # 巡检员标识
+  X-Inspector-Id: <inspector_id>      # 巡检员标识（必填, 用于结果回溯）
+  X-Request-Id:   <uuid>              # 可选, 链路追踪
 Body (multipart):
-  file: <binary>                       # 必填
+  file: <binary>                       # 必填, 1 张图或 1 个视频
   meta: <JSON string>                  # 可选, 业务元数据
         {
           "asset_id": "BJ-SUBSTATION-001",
@@ -295,6 +298,8 @@ Body (multipart):
           "remark": "雨后巡检"
         }
 ```
+
+> **说明**：本系统**不实现用户鉴权**（详见 §13）。`X-Inspector-Id` 仅用于结果回溯与责任标识，不做权限校验。
 
 **响应（成功 202）**：
 
@@ -458,7 +463,9 @@ CREATE TABLE inspections (
     file_type       VARCHAR(16),                  -- 'image' | 'video'
     request_meta    JSONB,                        -- 上传时附带的元数据
     result          JSONB,                        -- 识别结果 (结构化, 由引擎返回)
-    summary         TEXT,                         -- 引擎或 LLM 生成的一句话总结
+    summary         TEXT,                         -- 引擎生成的一句话总结 (可选)
+    llm_enrichment  JSONB,                        -- LLM 富化: {summary, recommendations, model, prompt_version, token_used, generated_at}
+    enrichment_status VARCHAR(16),                 -- 枚举: NONE / RUNNING / SUCCESS / FAILED
     error_message   TEXT,
     error_code      VARCHAR(64),
     retry_count     INT NOT NULL DEFAULT 0,
@@ -567,26 +574,26 @@ CREATE INDEX idx_engine_calls_record ON engine_calls(record_id);
 
 ### 7.2 端点清单
 
-| 方法 | 路径 | 鉴权 | 说明 |
-|---|---|---|---|
-| GET | `/api/v1/health` | 否 | 健康检查（DB/Redis/MinIO） |
-| POST | `/api/v1/inspect/{algorithm_code}` | 是 | **核心**：算法对应上传 |
-| POST | `/api/v1/upload` | 是 | 简单验证上传 |
-| GET | `/api/v1/algorithms` | 是 | 列出算法 |
-| GET | `/api/v1/algorithms/{code}` | 是 | 算法详情 |
-| GET | `/api/v1/records` | 是 | 多条件查询（分页） |
-| GET | `/api/v1/records/{id}` | 是 | 单条详情 |
-| POST | `/api/v1/records/{id}/retry` | 是 | 失败重试 |
-| GET | `/api/v1/records/{id}/file` | 是 | 获取原文件签名 URL |
-| POST | `/api/v1/stats/report` | 是 | 生成 LLM 报告 |
-| GET | `/api/v1/stats/reports` | 是 | 报告列表 |
-| GET | `/api/v1/stats/reports/{id}` | 是 | 报告详情 |
-| GET | `/api/v1/stats/aggregate` | 是 | 纯统计聚合（看板用，不调 LLM） |
-| POST | `/api/v1/chat/sessions` | 是 | 创建对话 |
-| GET | `/api/v1/chat/sessions` | 是 | 对话列表 |
-| GET | `/api/v1/chat/sessions/{id}/messages` | 是 | 历史消息 |
-| POST | `/api/v1/chat/sessions/{id}/messages` | 是 | 发送消息（SSE 流式响应） |
-| DELETE | `/api/v1/chat/sessions/{id}` | 是 | 删除对话 |
+| 方法 | 路径 | 说明 |
+|---|---|---|
+| GET | `/api/v1/health` | 健康检查（DB/Redis/MinIO） |
+| POST | `/api/v1/inspect/{algorithm_code}` | **核心**：算法对应上传 |
+| POST | `/api/v1/upload` | 简单验证上传 |
+| GET | `/api/v1/algorithms` | 列出算法 |
+| GET | `/api/v1/algorithms/{code}` | 算法详情 |
+| GET | `/api/v1/records` | 多条件查询（分页） |
+| GET | `/api/v1/records/{id}` | 单条详情 |
+| POST | `/api/v1/records/{id}/retry` | 失败重试 |
+| GET | `/api/v1/records/{id}/file` | 获取原文件签名 URL |
+| POST | `/api/v1/stats/report` | 生成 LLM 报告 |
+| GET | `/api/v1/stats/reports` | 报告列表 |
+| GET | `/api/v1/stats/reports/{id}` | 报告详情 |
+| GET | `/api/v1/stats/aggregate` | 纯统计聚合（看板用，不调 LLM） |
+| POST | `/api/v1/chat/sessions` | 创建对话 |
+| GET | `/api/v1/chat/sessions` | 对话列表 |
+| GET | `/api/v1/chat/sessions/{id}/messages` | 历史消息 |
+| POST | `/api/v1/chat/sessions/{id}/messages` | 发送消息（SSE 流式响应） |
+| DELETE | `/api/v1/chat/sessions/{id}` | 删除对话 |
 
 ### 7.3 核心端点详述
 
@@ -596,10 +603,10 @@ CREATE INDEX idx_engine_calls_record ON engine_calls(record_id);
 
 | 字段 | 类型 | 必填 | 说明 |
 |---|---|---|---|
-| file | binary | 是 | 图片或视频 |
-| meta | string (JSON) | 否 | 业务元数据，参考 `algorithms.request_schema` |
-| inspector_id | string | 否 | 巡检员 ID（也可放 Header） |
-| asset_id | string | 否 | 资产 ID（也可放 meta） |
+| file | binary | 图片或视频 |
+| meta | string (JSON) | 业务元数据，参考 `algorithms.request_schema` |
+| inspector_id | string | 巡检员 ID（也可放 Header） |
+| asset_id | string | 资产 ID（也可放 meta） |
 
 **Response 202**：
 
@@ -619,7 +626,7 @@ CREATE INDEX idx_engine_calls_record ON engine_calls(record_id);
 |---|---|---|
 | 400 | `INVALID_ALGORITHM` | algorithm_code 不存在或未启用 |
 | 400 | `INVALID_FILE` | 文件类型/大小不符 |
-| 401 | `UNAUTHORIZED` | 缺/错 API Key |
+
 | 413 | `FILE_TOO_LARGE` | 超过大小限制 |
 | 429 | `RATE_LIMITED` | 触发限流 |
 | 500 | `INTERNAL_ERROR` | 系统异常 |
@@ -729,6 +736,122 @@ event: message
 data: {"delta": "", "done": true, "message_id": 1024, "tool_calls": [...]}
 ```
 
+
+### 7.3.5 完整响应结构（识别结果 + LLM 富化 + 元数据）
+
+**核心约定**：本系统对巡检员 App 的所有相关响应（上传、查询、单条详情），必须**自洽**地包含该图的：
+
+1. **识别结果** — 算法引擎返回的结构化结果
+2. **LLM 富化** — 在识别结果基础上由 LLM 生成的一句话总结 + 处置建议
+3. **完整元数据** — 用于 App 与上传请求关联、回溯展示
+
+App 单次调用即可完成解析、归档与展示，无需二次拼接。
+
+#### 7.3.5.1 通用响应 Schema（GET `/api/v1/records/{id}` 或 `?wait=true` 同步返回）
+
+```json
+{
+  "record_id": 1024,
+  "algorithm_code": "insulator-damage",
+  "algorithm_name": "绝缘子破损识别",
+  "category": "供配电",
+
+  "status": "SUCCESS",
+  "created_at":  "2026-07-01T10:00:00Z",
+  "started_at":  "2026-07-01T10:00:01Z",
+  "finished_at": "2026-07-01T10:00:12Z",
+  "duration_ms": 11000,
+
+  "meta": {
+    "inspector_id": "INSP-001",
+    "asset_id":     "BJ-SUBSTATION-001",
+    "location":     {"lat": 39.9, "lng": 116.4},
+    "client_meta":  {"voltage_level": "110kV", "remark": "雨后巡检"}
+  },
+
+  "file": {
+    "object_key": "inspections/2026/07/01/1024/photo.jpg",
+    "file_url":   "https://minio.local/gevic-raw/.../photo.jpg?X-Amz-Signature=...",
+    "file_hash":  "sha256:abc123...",
+    "file_size":  1024000,
+    "file_type":  "image/jpeg"
+  },
+
+  "recognition": {
+    "defects": [
+      {
+        "type": "破损",
+        "confidence": 0.92,
+        "bbox": [10, 20, 100, 200],
+        "severity": "high",
+        "description": "绝缘子伞裙破损"
+      }
+    ],
+    "raw": { /* 引擎原始返回 */ }
+  },
+
+  "llm_enrichment": {
+    "summary": "检测到 1 处绝缘子破损（高置信度 92%），位于图像右上区域。",
+    "recommendations": [
+      "建议立即安排现场核查并更换破损绝缘子",
+      "对同类批次设备进行专项巡检"
+    ],
+    "model":          "qwen-plus",
+    "prompt_version": "v1.0",
+    "token_used":     380,
+    "generated_at":   "2026-07-01T10:00:12Z"
+  },
+
+  "error": null
+}
+```
+
+#### 7.3.5.2 失败时响应
+
+```json
+{
+  "record_id": 1024,
+  "algorithm_code": "insulator-damage",
+  "status": "FAILED",
+  "created_at":  "2026-07-01T10:00:00Z",
+  "finished_at": "2026-07-01T10:00:30Z",
+  "duration_ms": 29000,
+  "meta":   { "inspector_id": "INSP-001", "asset_id": "..." },
+  "file":   { "object_key": "...", "file_url": "...", "file_hash": "...", "file_type": "image/jpeg" },
+  "recognition": null,
+  "llm_enrichment": null,
+  "error": {
+    "code": "ENGINE_TIMEOUT",
+    "message": "云 API 调用超时（>30s）",
+    "details": { "engine": "aliyun", "endpoint": "RecognizeInsulatorDamage" }
+  }
+}
+```
+
+#### 7.3.5.3 字段稳定性保证
+
+- 所有字段命名采用 `snake_case`，保持稳定
+- 任何字段的**新增**对旧版 App 是非破坏性的（App 忽略未知字段即可）
+- 任何字段的**重命名/删除/类型变更**需走文档变更记录（§0.1）并提前通知 App 联调方
+- App 解析策略：忽略未知字段；必填字段缺失视为该条数据不可用
+
+#### 7.3.5.4 上传即返回完整结果（同步模式）
+
+为简化 App 集成，可使用**同步等待**模式：
+
+```
+POST /api/v1/inspect/insulator-damage?wait=true&timeout=30
+```
+
+服务端在 `timeout` 秒内阻塞等待任务完成，超时则返回当前状态。响应结构与 §7.3.5.1 一致，但 `status` 可能是 PENDING/RUNNING/SUCCESS/FAILED 中任一。
+
+> **App 推荐用法**：
+> - **简单场景**（网络好、识别 < 30s）：用 `?wait=true&timeout=30` 一次拿到完整结果
+> - **复杂场景**（弱网/视频）：用 202 异步模式 + 轮询 `GET /api/v1/records/{id}`
+
+#### 7.3.5.5 列表查询响应
+
+`GET /api/v1/records` 返回列表时，每条记录采用**精简版**响应（不含 `recognition.raw` 与 `file_url`），减少响应体积；如需完整响应，调 `GET /api/v1/records/{id}`。
 ### 7.4 错误码统一格式
 
 ```json
@@ -976,7 +1099,7 @@ def run_inspection(self, record_id: int):
 
 ### 10.4 并发与背压
 
-- **上传端限速**：API 网关或 FastAPI 中间件，按 API Key 限速（如 100 req/min）
+- **上传端限速**：API 网关或 FastAPI 中间件，**按 IP 限速**（如 100 req/min, 与 §13.4 一致）
 - **Worker 弹性**：Celery 进程数可调，K8s 部署时按 HPA 扩缩
 - **队列堆积告警**：监控 `inspect_queue` 长度，超阈值告警
 
@@ -984,7 +1107,7 @@ def run_inspection(self, record_id: int):
 
 ## 11. LLM 智能分析
 
-### 11.1 LLM 选型
+### 11.1 LLM 选型（外部 API, OpenAI 兼容 chat）
 
 - **接入方式**：OpenAI 兼容 chat completions API
 - **可选厂商**（可配置切换）：
@@ -998,7 +1121,7 @@ def run_inspection(self, record_id: int):
 
 ### 11.2 Prompt 模板（V1.0 样例）
 
-#### 报告生成模板（comprehensive）
+#### 11.2.1 报告生成模板（comprehensive）
 
 ```markdown
 你是一名资深的城市基础设施巡检分析师。请基于以下巡检识别数据,产出结构化分析报告。
@@ -1025,7 +1148,7 @@ def run_inspection(self, record_id: int):
 请用中文输出, 数字要有依据, 建议要可执行。
 ```
 
-#### AI 对话系统提示词
+#### 11.2.2 AI 对话系统提示词
 
 ```markdown
 你是 GE-VIC 巡检数据 AI 助手, 可访问以下工具:
@@ -1040,7 +1163,74 @@ def run_inspection(self, record_id: int):
 4. 不知道的请说"没有相关数据"
 ```
 
-### 11.3 报告生成流程
+### 11.3 逐条记录 LLM 富化（实时，V1.0 必选）
+
+**核心流程**：每条识别记录 `inspections` 在引擎识别成功后，**同一 Celery 任务内**再调用一次 LLM，对该单条结果生成"一句话总结 + 处置建议"，写入 `inspections.llm_enrichment`（JSONB）。
+
+**触发位置**：`run_inspection` Celery 任务，识别成功后立即调用。
+
+**输入 Prompt 模板（per_record_enrichment）**：
+
+```markdown
+你是一名资深的城市基础设施巡检员。基于以下**单条**识别结果，给出一句话总结和最多 3 条处置建议。
+
+# 巡检背景
+- 设施类型: {{category}}
+- 识别算法: {{algorithm_name}}
+- 巡检员: {{inspector_id}}
+- 资产: {{asset_id}}
+- 位置: {{location}}
+
+# 识别结果
+{{recognition_result_json}}
+
+# 输出要求
+## 一句话总结 (100 字以内)
+## 处置建议 (1-3 条, 按优先级, 可执行)
+```
+
+**输出 Schema**（写入 `llm_enrichment` JSONB）：
+
+```json
+{
+  "summary": "检测到 1 处绝缘子破损（高置信度 92%），位于图像右上区域。",
+  "recommendations": [
+    "建议立即安排现场核查并更换破损绝缘子",
+    "对同类批次设备进行专项巡检"
+  ],
+  "model": "qwen-plus",
+  "prompt_version": "per_record_v1.0",
+  "token_used": 380,
+  "generated_at": "2026-07-01T10:00:12Z"
+}
+```
+
+**失败处理**：
+- LLM 调用失败 → 重试 2 次（指数退避）
+- 仍失败 → `enrichment_status = FAILED`，`llm_enrichment = null`，**不影响主任务 SUCCESS**
+- App 端可通过 `enrichment_status` 字段感知"识别有结果但 LLM 富化失败"
+- 提供独立接口 `POST /api/v1/records/{id}/enrich` 触发重试
+
+**成本控制**：
+- 输入 token 上限 1500，输出 token 上限 500
+- 单次估算 ¥0.001-¥0.01（视厂商）
+- 限速：与 `stats_queue` 共用 10 req/min
+
+**与周期性报告的区别**：
+
+| 维度 | 逐条富化（§11.3） | 周期性报告（§11.4） |
+|---|---|---|
+| 输入 | 单条记录 | 聚合统计 + 样本 |
+| 触发 | 实时（识别成功后） | 按需 / 定时 |
+| 用途 | App 直接展示给巡检员 | 管理决策 / 周报 |
+| 频率 | 每条 1 次 | 周报/月报 |
+| Prompt 长度 | 短（单条） | 长（聚合 + 多样本） |
+
+
+
+
+
+### 11.4 报告生成流程（周期性 / 按需）
 
 ```
 1. 用户在看板选择: 报告类型 + 时间窗 + 算法/分类/资产
@@ -1055,13 +1245,13 @@ def run_inspection(self, record_id: int):
 4. 前端: 同步模式直接渲染 / 异步模式轮询
 ```
 
-### 11.4 AI 对话 (Function Calling)
+### 11.5 AI 对话（Function Calling）
 
 - 维护一组工具函数（DB 查询、统计聚合、报告查询）
 - LLM 决定调用哪个工具 → 后端执行 → 结果回传 LLM → LLM 组织自然语言回答
 - 工具调用结果存 `chat_messages.tool_calls`
 
-### 11.5 成本与限速
+### 11.6 成本与限速
 
 - **每日 token 上限**（环境变量 `LLM_DAILY_TOKEN_LIMIT`，默认 5M）
 - **每分钟请求数**（Celery rate_limit，默认 10/m）
@@ -1103,24 +1293,54 @@ gevic-raw/
 
 ---
 
-## 13. 认证与授权
+## 13. 认证与授权 — 无鉴权模式
 
-### 13.1 V1.0 鉴权
+### 13.1 设计决策
 
-- **API Key**：在 `X-API-Key` Header 传递
-- 后端维护 `api_keys` 表：`id, key_hash, name, scopes, is_active, expires_at`
-- 启动时加载到内存字典，支持热更新
-- **巡检员标识**：`X-Inspector-Id` Header 或请求体
+**V1.0 起，本系统不实现用户级鉴权（API Key / OAuth / JWT 等均不做）**。
 
-### 13.2 V1.1 增强
+**依据**：
+- 巡检员 App 的端点是**内置写死**的，不由一线员工选择
+- 端点对外不可见，App 通过业务方自有渠道（应用市场、内部分发）下发
+- 巡检员无能力直接访问 API，也无法选择调用哪个端点
 
-- 升级为 OAuth2 / JWT
-- 引入用户-角色-权限（RBAC）
-- 多租户支持
+### 13.2 安全假设
 
-### 13.3 限速
+系统的安全边界由以下三层保障，**任一被突破均视为不可接受风险**：
 
-按 API Key 限速：100 req/min（V1.0 起步，按实际情况调）
+| 层级 | 保障措施 | 责任方 |
+|---|---|---|
+| **网络层** | 部署在内网 / VPN / 仅办公网可达；不开公网 | 运维 / 网络 |
+| **应用层** | 巡检员 App 由业务方打包签名、版本号管控、吊销机制 | App 业务方 |
+| **传输层** | HTTPS（TLS 1.2+），证书由内部 CA 签发 | 运维 |
+
+### 13.3 唯一标识 — `X-Inspector-Id`
+
+- `X-Inspector-Id` 是**业务回溯标识**，**非鉴权**
+- 来自巡检员 App，由 App 内登录态决定，不由系统校验
+- 仅用于：日志关联、记录归属、统计回溯
+
+### 13.4 限速（V1.0）
+
+按**来源 IP** 限速（兜底，防止 App 端逻辑失控）：
+- 单 IP：100 req/min（可调）
+- 触发后返回 `429 RATE_LIMITED`
+
+### 13.5 何时升级鉴权
+
+下列任一情况出现，需重新评估并升级为 API Key + 鉴权方案：
+- 巡检员 App 渠道开放（公网下载 / 多渠道分发）
+- 出现多租户需求（不同巡检公司共用系统）
+- API 被开放给第三方系统
+- 出现安全事件（未授权访问）
+
+### 13.6 不做什么（明确边界）
+
+- ❌ 不实现用户注册/登录
+- ❌ 不实现密码/OAuth/JWT
+- ❌ 不实现 RBAC / 细粒度权限
+- ❌ 不实现 API Key 签发管理界面
+- ❌ 不实现租户隔离
 
 ---
 
@@ -1269,7 +1489,7 @@ V1.0 本地 → V1.0 云：
 
 ### 17.3 端到端测试 (Playwright)
 
-- 看板：登录 → 触发报告生成 → 查看报告
+- 看板：访问 → 触发报告生成 → 查看报告
 - 看板：AI 对话多轮
 
 ### 17.4 性能与并发
@@ -1362,9 +1582,11 @@ V1.0 本地 → V1.0 云：
 3. **Q-OPEN-3**：LLM 首选厂商（成本、效果、合规） → 评审决定
 4. **Q-OPEN-4**：原文件保留期（1 年是否够？合规要求？） → 合规方确认
 5. **Q-OPEN-5**：是否需要支持视频抽帧识别（上传 1 个长视频，按 N 秒抽 N 帧分别识别后聚合）？V1.0 暂只支持整视频识别，后续增强
-6. **Q-OPEN-6**：鉴权方案升级到 OAuth2/JWT 的具体时间点 → 业务方评估
+6. **Q-OPEN-6（V1.1 已澄清）**：原计划升级到 OAuth2/JWT。**经评审决定 V1.0 不做用户鉴权**（见 §13），改为网络边界 + App 分发双层保障。如未来需要鉴权，参见 §13.5 触发条件。
 7. **Q-OPEN-7**：40+ 算法的清单与优先级 → 业务方提供
-8. **Q-OPEN-8**：看板是否需要权限分级（管理员/普通用户/只读）？V1.0 简化不做，V1.1 考虑
+8. **Q-OPEN-8**：看板是否需要权限分级（管理员/普通用户/只读）？**V1.0 简化不做**（与无鉴权模式一致），V2.0 考虑
+
+9. **Q-OPEN-9**：LLM 富化失败重试的 SLA 与告警阈值 — 是否需要「富化失败率超 X% 触发告警」？ 默认：失败率 > 5% 持续 5 分钟告警
 
 ---
 
