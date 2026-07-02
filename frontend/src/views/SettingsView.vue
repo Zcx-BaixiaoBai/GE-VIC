@@ -172,14 +172,48 @@
             </el-select>
           </el-form-item>
           <el-form-item label="引擎配置">
+            <div class="config-form-header">
+              <span class="muted small">{{ currentSchema.length }} 个字段</span>
+              <el-button text :icon="showRawJson ? ViewIcon : DocumentIcon" size="small" @click="showRawJson = !showRawJson">
+                {{ showRawJson ? '返回表单' : '高级: 查看/编辑 JSON' }}
+              </el-button>
+            </div>
+
+            <!-- 表单模式 -->
+            <div v-if="!showRawJson" class="config-fields">
+              <div v-for="field in currentSchema" :key="field.key" class="config-field-row">
+                <label class="config-field-label">
+                  {{ field.label }}
+                  <span v-if="field.sensitive" class="sensitive-tag">敏感</span>
+                </label>
+                <div class="config-field-control">
+                  <el-input v-if="field.type === 'text'" v-model="createForm.engineConfig[field.key]" :placeholder="field.placeholder" clearable />
+                  <el-input v-else-if="field.type === 'password'" v-model="createForm.engineConfig[field.key]" type="password" :placeholder="field.placeholder || '输入后写入数据库'" show-password clearable />
+                  <el-input-number v-else-if="field.type === 'number'" v-model="createForm.engineConfig[field.key]" :min="field.min" :max="field.max" :step="field.step || 1" :placeholder="String(field.default)" controls-position="right" style="width: 100%" />
+                  <div v-else-if="field.type === 'slider'" class="slider-wrap">
+                    <el-slider v-model="createForm.engineConfig[field.key]" :min="field.min || 0" :max="field.max || 1" :step="field.step || 0.1" show-input :show-input-controls="false" />
+                    <code class="slider-value">{{ Number(createForm.engineConfig[field.key]).toFixed(1) }}</code>
+                  </div>
+                  <el-input v-else-if="field.type === 'textarea'" v-model="createForm.engineConfig[field.key]" type="textarea" :rows="3" :placeholder="field.placeholder" />
+                  <el-select v-else-if="field.type === 'select' && field.options" v-model="createForm.engineConfig[field.key]" style="width: 100%">
+                    <el-option v-for="opt in field.options" :key="opt.value" :label="opt.label" :value="opt.value" />
+                  </el-select>
+                  <span v-if="field.hint" class="form-hint">{{ field.hint }}</span>
+                </div>
+              </div>
+              <div v-if="currentSchema.length === 0" class="muted small">此引擎类型暂无配置项, 使用默认参数</div>
+            </div>
+
+            <!-- 原始 JSON 模式 -->
             <el-input
-              v-model="createForm.engineConfigStr"
+              v-else
+              v-model="engineConfigJsonStr"
               type="textarea"
-              :rows="5"
-              placeholder='{"delay_ms": 500, "defects_count": 1}'
+              :rows="8"
               class="json-input"
+              @blur="syncJsonToConfig"
             />
-            <span class="form-hint">JSON 格式, 传给识别引擎的参数</span>
+            <span v-if="showRawJson" class="form-hint">直接编辑 JSON, 失焦后自动同步到表单</span>
           </el-form-item>
         </el-form>
         <template #footer>
@@ -347,7 +381,7 @@
 </template>
 
 <script setup lang="ts">
-import { onMounted, ref, computed } from 'vue'
+import { onMounted, ref, computed, watch } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import {
   Cpu,
@@ -355,6 +389,7 @@ import {
   CircleClose,
   Close,
   Connection,
+  Document,
   DataLine,
   Delete,
   Folder,
@@ -374,6 +409,7 @@ interface AlgorithmWithMeta extends Algorithm { _toggling?: boolean }
 
 const PlusIcon = Plus
 const RefreshIcon = Refresh
+const DocumentIcon = Document
 const ViewIcon = View
 const DeleteIcon = Delete
 const ConnectionIcon = Connection
@@ -417,15 +453,72 @@ const filters = computed(() => [
   { key: 'inactive' as const, label: '已停用', count: algorithms.value.length - activeCount.value },
 ])
 
+// 每个引擎类型的配置字段定义 (驱动动态表单)
+interface EngineFieldDef {
+  key: string
+  label: string
+  type: 'text' | 'number' | 'slider' | 'textarea' | 'password' | 'select'
+  default: any
+  hint?: string
+  placeholder?: string
+  min?: number
+  max?: number
+  step?: number
+  options?: Array<{ label: string; value: string }>
+  sensitive?: boolean
+}
+
+const ENGINE_SCHEMAS: Record<string, EngineFieldDef[]> = {
+  multimodal_llm: [
+    { key: 'extract_frames', label: '视频抽帧数', type: 'number', min: 1, max: 8, step: 1, default: 3, hint: '视频上传时均匀采样的帧数 (1-8)' },
+    { key: 'max_long_edge', label: '帧长边限制 (px)', type: 'number', min: 256, max: 2048, step: 64, default: 1024, hint: '抽出的帧会缩放到此长边' },
+    { key: 'temperature', label: 'LLM 温度', type: 'slider', min: 0, max: 1, step: 0.1, default: 0.3, hint: '越高输出越随机' },
+    { key: 'prompt', label: '系统提示词 (可选)', type: 'textarea', default: '', placeholder: '留空使用默认中文巡检 prompt', hint: '指导 LLM 输出 JSON 结构化结果的指令' },
+    { key: 'user_prompt', label: '用户提示词 (可选)', type: 'textarea', default: '', placeholder: '留空使用默认' },
+  ],
+  cloud_api: [
+    { key: 'provider', label: '厂商', type: 'select', default: 'aliyun', options: [
+      { label: '阿里云视觉智能', value: 'aliyun' },
+      { label: '腾讯云', value: 'tencent' },
+      { label: '百度智能云', value: 'baidu' },
+    ]},
+    { key: 'endpoint', label: 'API 端点 URL', type: 'text', default: 'https://imagerecog.cn-shanghai.aliyuncs.com' },
+    { key: 'action', label: 'API Action', type: 'text', default: 'RecognizeInsulatorDamage' },
+    { key: 'access_key_id', label: 'Access Key ID', type: 'text', default: '', placeholder: 'AKID...' },
+    { key: 'access_key_secret', label: 'Access Key Secret', type: 'password', default: '', sensitive: true, hint: '写入数据库前会自动剔除 secret 字段' },
+    { key: 'timeout_sec', label: '超时 (秒)', type: 'number', min: 5, max: 120, step: 5, default: 30 },
+  ],
+  mock: [
+    { key: 'delay_ms', label: '模拟耗时 (ms)', type: 'number', min: 0, max: 10000, step: 100, default: 500, hint: '识别模拟的延迟, 演示用' },
+    { key: 'defects_count', label: '返回缺陷数', type: 'number', min: 0, max: 10, step: 1, default: 1 },
+  ],
+  hikvision_brain: [
+    { key: 'endpoint', label: '海康超脑 API 地址', type: 'text', default: '', placeholder: 'https://<host>:<port>' },
+    { key: 'username', label: '用户名', type: 'text', default: '' },
+    { key: 'password', label: '密码', type: 'password', default: '', sensitive: true },
+  ],
+  local_model: [
+    { key: 'endpoint', label: '推理服务 URL', type: 'text', default: 'http://localhost:8001' },
+  ],
+}
+
+function buildDefaultConfig(engineType: string): Record<string, any> {
+  const schema = ENGINE_SCHEMAS[engineType] || []
+  const cfg: Record<string, any> = {}
+  for (const f of schema) cfg[f.key] = f.default
+  return cfg
+}
+
 const createDialogVisible = ref(false)
 const creating = ref(false)
 const createFormRef = ref()
+const showRawJson = ref(false)
 const createForm = ref({
   code: '',
   name: '',
   category: '',
   engine_type: 'mock',
-  engineConfigStr: '{"delay_ms": 500}',
+  engineConfig: buildDefaultConfig('mock'),
 })
 const createRules = {
   code: [
@@ -506,14 +599,48 @@ async function onDelete(row: Algorithm) {
   await loadAlgorithms()
 }
 
+const currentSchema = computed<EngineFieldDef[]>(() => ENGINE_SCHEMAS[createForm.value.engine_type] || [])
+const engineConfigJsonStr = ref('')
+
+function configToJson(cfg: Record<string, any>): string {
+  const cleaned: Record<string, any> = {}
+  for (const [k, v] of Object.entries(cfg || {})) {
+    if (v !== '' && v !== null && v !== undefined) cleaned[k] = v
+  }
+  return JSON.stringify(cleaned, null, 2)
+}
+function syncConfigToJson() {
+  engineConfigJsonStr.value = configToJson(createForm.value.engineConfig)
+}
+function syncJsonToConfig() {
+  const text = engineConfigJsonStr.value.trim()
+  if (!text) {
+    createForm.value.engineConfig = buildDefaultConfig(createForm.value.engine_type)
+    return
+  }
+  try {
+    const parsed = JSON.parse(text)
+    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+      const merged: Record<string, any> = { ...buildDefaultConfig(createForm.value.engine_type), ...parsed }
+      createForm.value.engineConfig = merged
+    } else {
+      ElMessage.error('JSON 必须是对象')
+    }
+  } catch (e) {
+    ElMessage.error('JSON 解析失败: ' + e)
+  }
+}
+
 function openCreateDialog() {
   createForm.value = {
     code: '',
     name: '',
     category: '',
     engine_type: 'mock',
-    engineConfigStr: '{"delay_ms": 500}',
+    engineConfig: buildDefaultConfig('mock'),
   }
+  showRawJson.value = false
+  syncConfigToJson()
   createDialogVisible.value = true
 }
 
@@ -522,14 +649,12 @@ async function onCreate() {
   const valid = await createFormRef.value.validate().catch(() => false)
   if (!valid) return
 
-  let engineConfig: any = {}
-  if (createForm.value.engineConfigStr.trim()) {
-    try {
-      engineConfig = JSON.parse(createForm.value.engineConfigStr)
-    } catch (e) {
-      ElMessage.error('引擎配置 JSON 解析失败: ' + e)
-      return
-    }
+  if (showRawJson.value) syncJsonToConfig()
+
+  const engineConfig: Record<string, any> = {}
+  for (const [k, v] of Object.entries(createForm.value.engineConfig || {})) {
+    if (v === '' || v === null || v === undefined) continue
+    engineConfig[k] = v
   }
 
   creating.value = true
@@ -572,6 +697,11 @@ async function onTestLLM() {
     llmTesting.value = false
   }
 }
+
+watch(() => createForm.value.engine_type, (newType) => {
+  createForm.value.engineConfig = buildDefaultConfig(newType)
+  if (showRawJson.value) syncConfigToJson()
+})
 
 onMounted(() => {
   loadAlgorithms()
@@ -1202,6 +1332,77 @@ onMounted(() => {
   font-size: 12px;
   color: #94a3b8;
   margin-top: 4px;
+}
+
+/* ---- 动态引擎配置表单 ---- */
+.config-form-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 12px;
+  padding-bottom: 8px;
+  border-bottom: 1px dashed #eef2f6;
+}
+.config-fields {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+.config-field-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+}
+.config-field-label {
+  flex: 0 0 130px;
+  font-size: 13px;
+  font-weight: 500;
+  color: #475569;
+  padding-top: 8px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.config-field-control {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.config-field-control :deep(.el-input__wrapper) {
+  background: #f8fafc;
+  box-shadow: 0 0 0 1px #e2e8f0 inset;
+  border-radius: 9px;
+}
+.config-field-control :deep(.el-input__wrapper):hover { box-shadow: 0 0 0 1px #cbd5e1 inset; }
+.config-field-control :deep(.el-input__wrapper.is-focus) { box-shadow: 0 0 0 1px #6366f1 inset, 0 0 0 3px rgba(99, 102, 241, 0.1); }
+.sensitive-tag {
+  font-size: 10px;
+  font-weight: 600;
+  color: #b45309;
+  background: #fffbeb;
+  padding: 1px 6px;
+  border-radius: 4px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.slider-wrap {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.slider-wrap :deep(.el-slider) { flex: 1; margin-right: 0; }
+.slider-wrap :deep(.el-slider__input) { width: 80px !important; }
+.slider-value {
+  font-family: ui-monospace, monospace;
+  font-size: 12px;
+  color: #475569;
+  background: #f1f5f9;
+  padding: 2px 8px;
+  border-radius: 5px;
+  min-width: 36px;
+  text-align: center;
 }
 .json-input :deep(textarea) {
   font-family: ui-monospace, monospace;

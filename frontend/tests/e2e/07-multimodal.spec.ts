@@ -68,3 +68,79 @@ test('API: /admin/algorithms allows multimodal_llm engine type', async ({ reques
     headers: { 'X-Inspector-Id': 'WEB-DEMO-USER' },
   })
 })
+
+test('UI: create dialog uses dynamic form fields per engine type', async ({ page }) => {
+  await page.goto('/settings')
+  await page.waitForSelector('.algo-card', { timeout: 10000 })
+  await page.getByRole('button', { name: '新增算法' }).click()
+  await page.waitForSelector('.settings-dialog', { timeout: 5000 })
+
+  // default = mock: 2 fields
+  await expect(page.locator('.config-field-row')).toHaveCount(2)
+
+  // switch to multimodal
+  const select = page.locator('.el-form-item:has(label:has-text("引擎类型")) .el-select')
+  await select.click()
+  await page.getByRole('option', { name: /多模态 LLM/ }).click()
+  await page.waitForTimeout(400)
+  // 5 fields
+  await expect(page.locator('.config-field-row')).toHaveCount(5)
+
+  // switch to cloud_api
+  await select.click()
+  await page.getByRole('option', { name: /Cloud API/ }).click()
+  await page.waitForTimeout(400)
+  // 6 fields
+  await expect(page.locator('.config-field-row')).toHaveCount(6)
+  // sensitive tag exists
+  await expect(page.locator('.sensitive-tag').first()).toBeVisible()
+
+  // advanced JSON toggle
+  await page.getByRole('button', { name: /高级|返回表单/ }).click()
+  await page.waitForTimeout(300)
+  await expect(page.locator('.json-input')).toBeVisible()
+  await page.getByRole('button', { name: /返回表单/ }).click()
+  await page.waitForTimeout(300)
+  await expect(page.locator('.config-field-row')).toHaveCount(6)
+
+  // close
+  await page.keyboard.press('Escape')
+})
+
+test('UI: multimodal form submission persists custom config', async ({ page, request }) => {
+  const stamp = Date.now() % 100000
+  const code = 'mm-form-e2e-' + stamp
+  await page.goto('/settings')
+  await page.waitForSelector('.algo-card', { timeout: 10000 })
+  await page.getByRole('button', { name: '新增算法' }).click()
+  await page.waitForSelector('.settings-dialog', { timeout: 5000 })
+  await page.locator('.el-form-item:has(label:has-text("Code")) input').fill(code)
+  await page.locator('.el-form-item:has(label:has-text("名称")) input').fill('[E2E] 多模态表单')
+  const select = page.locator('.el-form-item:has(label:has-text("引擎类型")) .el-select')
+  await select.click()
+  await page.getByRole('option', { name: /多模态 LLM/ }).click()
+  await page.waitForTimeout(400)
+  // change extract_frames via number input
+  const efInput = page.locator('.config-field-row').first().locator('.el-input-number input')
+  await efInput.fill('5')
+  await page.getByRole('button', { name: '创建算法' }).click()
+  await page.waitForTimeout(2000)
+
+  // verify via API (list then find)
+  const r = await request.get('http://127.0.0.1:8000/api/v1/admin/algorithms?include_inactive=true', {
+    headers: { 'X-Inspector-Id': 'WEB-DEMO-USER' },
+  })
+  expect(r.status()).toBe(200)
+  const list = await r.json()
+  const body = list.find((a: any) => a.code === code)
+  expect(body.code).toBe(code)
+  expect(body.engine_type).toBe('multimodal_llm')
+  expect(body.engine_config.extract_frames).toBe(5)
+  // temperature is the default 0.3
+  expect(body.engine_config.temperature).toBe(0.3)
+
+  // cleanup
+  await request.delete('http://127.0.0.1:8000/api/v1/admin/algorithms/' + code, {
+    headers: { 'X-Inspector-Id': 'WEB-DEMO-USER' },
+  })
+})
