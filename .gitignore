@@ -48,3 +48,7 @@ playwright/.cache/
 
 # Runtime error logs
 *.err
+
+# Local secrets (LLM API keys etc.)
+.env.local
+.env.*.local
