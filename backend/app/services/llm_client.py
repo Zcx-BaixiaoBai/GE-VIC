@@ -3,6 +3,8 @@
 通过 openai 库的 base_url 配置, 适配任何 OpenAI 兼容 API
 (DashScope / Ollama / LM Studio / vLLM / 自建网关 等)
 """
+import json
+import re
 import time
 from typing import Any
 
@@ -66,6 +68,79 @@ MOCK_RESPONSES_MULTIMODAL = [
         "summary": "无人机巡检 3 基杆塔, 1 处疑似锈蚀需现场复核, 其余设备正常。",
     },
 ]
+
+
+# ---- 统一 LLM 响应解析 (容错) ----
+import re as _re
+_THINK_RE = _re.compile(r"<think>.*?</think>", _re.DOTALL)
+
+
+def strip_think_blocks(text: str) -> str:
+    """去掉 <think>...</think> 推理块 (DeepSeek R1 / MiniMax M3 等思考模型)."""
+    if not text:
+        return text
+    return _THINK_RE.sub("", text).strip()
+
+
+def parse_json_response(content: str) -> dict[str, Any]:
+    """从 LLM 响应中提取 JSON 字典.
+
+    处理流程:
+    1. 去掉 <think>...</think> 推理块
+    2. 去掉 markdown 围栏 (```json ... ```)
+    3. 直接 json.loads
+    4. 失败则尝试找第一个 { ... 最后一个 } 之间的内容
+    5. 仍失败则返回 {"_raw_text": text, "description": text, "summary": text[:80]}
+
+    返回值始终是 dict, 方便调用方直接 .get().
+    """
+    if not content:
+        return {"_raw_text": "", "description": "", "summary": "", "observations": []}
+
+    text = strip_think_blocks(content)
+
+    # 去掉 markdown 围栏
+    if text.startswith("```"):
+        lines = text.split("\n")
+        if lines and lines[0].startswith("```"):
+            lines = lines[1:]
+        if lines and lines[-1].strip() == "```":
+            lines = lines[:-1]
+        text = "\n".join(lines).strip()
+
+    # 尝试 1: 整体解析
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        pass
+
+    # 尝试 2: 截取第一个 { ... 最后一个 }
+    start = text.find("{")
+    end = text.rfind("}")
+    if start >= 0 and end > start:
+        try:
+            return json.loads(text[start:end + 1])
+        except json.JSONDecodeError:
+            pass
+
+    # 全部失败: 返回 fallback 结构
+    return {
+        "_raw_text": text,
+        "description": text,
+        "summary": text[:80] if text else "(空响应)",
+        "observations": [],
+    }
+
+
+def make_strict_json_prompt(extra: str = "") -> str:
+    """追加到 system prompt 的尾段, 强制 JSON 输出且不含思考标签."""
+    return (
+        "\n\n重要: 只输出严格的 JSON (不要 markdown 围栏, 不要 <think> 标签, 不要解释)."
+        + (("\n" + extra) if extra else "")
+    )
+
+
+
 
 
 class LLMClient:

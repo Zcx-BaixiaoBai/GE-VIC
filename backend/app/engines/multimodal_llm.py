@@ -16,7 +16,7 @@ import time
 from typing import Any
 
 from app.engines.base import BaseEngine, RecognitionResult
-from app.services.llm_client import LLMClient
+from app.services.llm_client import LLMClient, make_strict_json_prompt, parse_json_response
 from app.config import Settings
 
 logger = logging.getLogger(__name__)
@@ -139,31 +139,8 @@ def _encode_data_url(data: bytes, mime: str) -> str:
 
 
 def _parse_llm_response(content: str) -> dict[str, Any]:
-    """解析 LLM 返回的 JSON 文本, 容错处理 (剥离 markdown 围栏等)."""
-    text = content.strip()
-    if text.startswith("```"):
-        lines = text.split("\n")
-        if lines and lines[0].startswith("```"):
-            lines = lines[1:]
-        if lines and lines[-1].strip() == "```":
-            lines = lines[:-1]
-        text = "\n".join(lines).strip()
-    try:
-        return json.loads(text)
-    except json.JSONDecodeError:
-        start = text.find("{")
-        end = text.rfind("}")
-        if start >= 0 and end > start:
-            try:
-                return json.loads(text[start:end + 1])
-            except json.JSONDecodeError:
-                pass
-        return {
-            "media_type": "unknown",
-            "description": text,
-            "observations": [],
-            "summary": text[:80] if text else "(无响应)",
-        }
+    """Compat wrapper - delegates to shared parse_json_response."""
+    return parse_json_response(content)
 
 
 class MultimodalLLMEngine(BaseEngine):

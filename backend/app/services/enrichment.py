@@ -7,7 +7,7 @@ import json
 from datetime import datetime, timezone
 from typing import Any
 
-from app.services.llm_client import LLMClient
+from app.services.llm_client import LLMClient, make_strict_json_prompt, parse_json_response
 from app.utils.exceptions import LLMError
 
 SYSTEM_PROMPT = """你是基础设施巡检领域的专家助手。
@@ -56,10 +56,11 @@ class EnrichmentService:
             temperature=0.3,
         )
 
-        try:
-            parsed = json.loads(result["content"])
-        except (json.JSONDecodeError, KeyError) as e:
-            raise LLMError(f"LLM 输出非 JSON: {e}") from e
+        parsed = parse_json_response(result.get("content", ""))
+        if "summary" not in parsed:
+            parsed["summary"] = parsed.get("_raw_text", "")[:80]
+        if "recommendations" not in parsed or not isinstance(parsed.get("recommendations"), list):
+            parsed["recommendations"] = []
 
         return {
             "summary": parsed.get("summary", ""),
