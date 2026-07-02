@@ -47,7 +47,7 @@ async def inspect(
             detail={"code": "INVALID_INSPECTOR_ID", "message": str(e)},
         )
 
-    algo = registry.get(algorithm_code)
+    algo = await registry.get(algorithm_code, session)
     if algo is None:
         raise HTTPException(
             status_code=400,

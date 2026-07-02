@@ -1,7 +1,6 @@
-"""算法注册表 - 启动加载 + 热刷新
+"""算法注册表 - 启动加载 + 运行时热更新
 
-V1.0 简化: 启动加载到内存字典, 增删算法需重启
-后续可加 LISTEN/NOTIFY 通知
+V1.1: 支持新增/更新/删除算法后, 缓存自动失效, 避免上传页看不到刚创建的算法
 """
 from datetime import datetime, timezone
 from typing import Any
@@ -31,19 +30,51 @@ class AlgorithmRegistry:
         self._cache = {algo.code: algo for algo in algorithms}
         self._loaded_at = datetime.now(timezone.utc)
 
-    def get(self, code: str) -> Algorithm | None:
-        """按 code 查找"""
-        return self._cache.get(code)
+    async def refresh(self, session: AsyncSession) -> None:
+        """重新从 DB 加载 (用于外部直接修改 DB 后的全量刷新)"""
+        await self.load(session)
+
+    def invalidate(self, code: str | None = None) -> None:
+        """失效缓存. code 为 None 时清空全部, 否则只清空指定 code."""
+        if code is None:
+            self._cache.clear()
+        else:
+            self._cache.pop(code, None)
+
+    def upsert(self, algo: Algorithm) -> None:
+        """插入或更新单条缓存 (调用方负责 commit 之后再调用)."""
+        if not algo.is_active:
+            self._cache.pop(algo.code, None)
+        else:
+            self._cache[algo.code] = algo
+
+    def remove(self, code: str) -> None:
+        """从缓存移除"""
+        self._cache.pop(code, None)
+
+    async def get(self, code: str, session: AsyncSession | None = None) -> Algorithm | None:
+        """按 code 查找. 缓存未命中时 (e.g. 后启动后新增) 可选地从 DB 回填."""
+        cached = self._cache.get(code)
+        if cached is not None:
+            return cached
+        if session is None:
+            return None
+        stmt = select(Algorithm).where(Algorithm.code == code, Algorithm.is_active.is_(True))
+        result = await session.execute(stmt)
+        algo = result.scalar_one_or_none()
+        if algo is not None:
+            self._cache[code] = algo
+        return algo
 
     def get_required(self, code: str) -> Algorithm:
-        """按 code 查找, 找不到抛 KeyError"""
-        algo = self.get(code)
+        """按 code 查找 (同步), 找不到抛 KeyError. 仅在缓存命中时可用."""
+        algo = self._cache.get(code)
         if algo is None:
-            raise KeyError(f"Algorithm not found or inactive: {code}")
+            raise KeyError(f"Algorithm not found in cache: {code}")
         return algo
 
     def all(self) -> list[Algorithm]:
-        """所有算法列表"""
+        """当前缓存中所有算法 (可能不含启动后新增的)"""
         return list(self._cache.values())
 
     def __len__(self) -> int:
@@ -78,7 +109,6 @@ def reset_registry() -> None:
 def to_dict(algo: Algorithm) -> dict[str, Any]:
     """序列化为 API 响应格式 (不暴露 engine_config 凭据)"""
     config = algo.engine_config or {}
-    # 脱敏: 隐藏 secret 字段
     safe_config = {k: v for k, v in config.items() if "secret" not in k.lower() and "key" not in k.lower()}
     safe_config["provider"] = config.get("provider")
 

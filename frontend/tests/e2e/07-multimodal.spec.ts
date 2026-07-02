@@ -144,3 +144,28 @@ test('UI: multimodal form submission persists custom config', async ({ page, req
     headers: { 'X-Inspector-Id': 'WEB-DEMO-USER' },
   })
 })
+
+test('UI: newly created algorithm appears in upload page without restart', async ({ page, request }) => {
+  const code = 'live-reg-' + (Date.now() % 100000)
+
+  const cr = await request.post('http://127.0.0.1:8000/api/v1/admin/algorithms', {
+    headers: { 'X-Inspector-Id': 'WEB-DEMO-USER' },
+    data: { code, name: '[Live Registry Test]', engine_type: 'mock', engine_config: { delay_ms: 100 } },
+  })
+  expect(cr.status()).toBe(201)
+
+  await page.goto('/upload')
+  await page.waitForSelector('.algo-pick', { timeout: 10000 })
+  const cards = await page.locator('.algo-pick:has(.algo-pick-code:text("' + code + '"))').count()
+  expect(cards).toBe(1)
+
+  const dr = await request.delete('http://127.0.0.1:8000/api/v1/admin/algorithms/' + code, {
+    headers: { 'X-Inspector-Id': 'WEB-DEMO-USER' },
+  })
+  expect(dr.status()).toBe(204)
+
+  await page.reload()
+  await page.waitForSelector('.algo-pick', { timeout: 10000 })
+  const afterCards = await page.locator('.algo-pick:has(.algo-pick-code:text("' + code + '"))').count()
+  expect(afterCards).toBe(0)
+})

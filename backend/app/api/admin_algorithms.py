@@ -12,6 +12,7 @@ from app.database import get_session
 from app.deps import get_inspector_id
 from app.models import Algorithm
 from app.schemas.algorithm import AlgorithmOut
+from app.services.algorithm_registry import get_registry
 
 logger = logging.getLogger(__name__)
 
@@ -45,7 +46,7 @@ async def list_algorithms_full(
     _: str = Depends(get_inspector_id),
 ) -> list[AlgorithmOut]:
     """�г������㷨 (settings ҳ��, �ɰ�����ͣ��)"""
-    from app.services.algorithm_registry import to_dict
+    from app.services.algorithm_registry import get_registry, to_dict
     stmt = select(Algorithm)
     if not include_inactive:
         stmt = stmt.where(Algorithm.is_active.is_(True))
@@ -87,6 +88,7 @@ async def create_algorithm(
     await session.commit()
     await session.refresh(algo)
     logger.info("Algorithm %s created by %s", body.code, inspector_id)
+    get_registry().upsert(algo)
     return AlgorithmOut(**to_dict(algo))
 
 
@@ -120,6 +122,7 @@ async def update_algorithm(
     await session.commit()
     await session.refresh(algo)
     logger.info("Algorithm %s updated by %s", code, inspector_id)
+    get_registry().upsert(algo)
     return AlgorithmOut(**to_dict(algo))
 
 
@@ -139,4 +142,5 @@ async def delete_algorithm(
         )
     await session.execute(delete(Algorithm).where(Algorithm.code == code))
     await session.commit()
+    get_registry().remove(code)
     logger.info("Algorithm %s deleted by %s", code, inspector_id)
