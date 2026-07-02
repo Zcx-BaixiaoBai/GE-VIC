@@ -1,12 +1,14 @@
 """GET /api/v1/settings/llm - LLM 配置与连接测试"""
 import logging
 from typing import Any
+from pydantic import Field
 
 from fastapi import APIRouter
 from pydantic import BaseModel
 
 from app.config import get_settings
 from app.services.llm_client import LLMClient
+from app.services.runtime_config import get_all as rc_get_all, update as rc_update
 
 logger = logging.getLogger(__name__)
 
@@ -20,6 +22,9 @@ class LLMConfigOut(BaseModel):
     max_input_tokens: int
     max_output_tokens: int
     mock_mode: bool
+    runtime_max_output_tokens: int | None = None
+    runtime_max_input_tokens: int | None = None
+    runtime_overrides: dict[str, bool] = Field(default_factory=dict, description="哪些值当前被 runtime 覆盖了")
 
 
 class LLMTestResult(BaseModel):
@@ -36,14 +41,23 @@ class LLMTestResult(BaseModel):
 
 @router.get("/llm", response_model=LLMConfigOut)
 async def get_llm_config() -> LLMConfigOut:
-    """获取当前 LLM 配置 (脱敏)"""
+    """获取当前 LLM 配置 (脱敏). runtime_* 显示被运行时配置覆盖的值."""
     settings = get_settings()
+    rc = rc_get_all()
+    rt_out = rc.get("llm_max_output_tokens")
+    rt_in = rc.get("llm_max_input_tokens")
     return LLMConfigOut(
         base_url=settings.llm_base_url,
         model=settings.llm_model,
-        max_input_tokens=settings.llm_max_input_tokens,
-        max_output_tokens=settings.llm_max_output_tokens,
+        max_input_tokens=rt_in if isinstance(rt_in, int) else settings.llm_max_input_tokens,
+        max_output_tokens=rt_out if isinstance(rt_out, int) else settings.llm_max_output_tokens,
         mock_mode=settings.llm_mock_mode,
+        runtime_max_output_tokens=rt_out if isinstance(rt_out, int) else None,
+        runtime_max_input_tokens=rt_in if isinstance(rt_in, int) else None,
+        runtime_overrides={
+            "max_output_tokens": isinstance(rt_out, int),
+            "max_input_tokens": isinstance(rt_in, int),
+        },
     )
 
 
@@ -78,3 +92,25 @@ async def test_llm_connection() -> LLMTestResult:
         )
     finally:
         await client.close()
+
+
+class LLMConfigUpdateIn(BaseModel):
+    """LLM 运行时配置更新 (仅 max tokens 可热更新)"""
+    max_input_tokens: int | None = Field(None, ge=128, le=128000)
+    max_output_tokens: int | None = Field(None, ge=16, le=32000)
+
+
+@router.patch("/llm", response_model=LLMConfigOut)
+async def update_llm_config(body: LLMConfigUpdateIn) -> LLMConfigOut:
+    """更新运行时 LLM 配置 (立即生效, 持久化到 .runtime-config.json).
+
+    注意: 只能改 max tokens. base_url/model/mock_mode 来自环境变量, 改需重启.
+    """
+    updates: dict[str, int] = {}
+    if body.max_input_tokens is not None:
+        updates["llm_max_input_tokens"] = body.max_input_tokens
+    if body.max_output_tokens is not None:
+        updates["llm_max_output_tokens"] = body.max_output_tokens
+    if updates:
+        rc_update(updates)
+    return await get_llm_config()

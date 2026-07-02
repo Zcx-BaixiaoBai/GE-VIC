@@ -281,6 +281,7 @@
               <p class="muted small">只读展示, 实际值由环境变量注入</p>
             </div>
             <el-button :icon="RefreshIcon" text @click="loadLLM">刷新</el-button>
+            <el-button type="primary" :icon="CheckIcon" :loading="llmSaving" size="small" @click="saveLLM">保存</el-button>
           </header>
 
           <div v-if="llmConfig" class="config-fields">
@@ -293,12 +294,30 @@
               <div class="field-value">{{ llmConfig.model }}</div>
             </div>
             <div class="config-field">
-              <div class="field-label"><el-icon><Sort /></el-icon> Max Input Tokens</div>
-              <div class="field-value">{{ llmConfig.max_input_tokens }}</div>
+              <div class="field-label">
+                <el-icon><Sort /></el-icon> Max Input Tokens
+                <span v-if="llmConfig.runtime_overrides?.max_input_tokens" class="runtime-tag">运行时</span>
+              </div>
+              <el-input-number
+                v-model="llmEdit.max_input_tokens"
+                :min="128" :max="128000" :step="256"
+                size="small"
+                controls-position="right"
+                style="width: 180px;"
+              />
             </div>
             <div class="config-field">
-              <div class="field-label"><el-icon><Sort /></el-icon> Max Output Tokens</div>
-              <div class="field-value">{{ llmConfig.max_output_tokens }}</div>
+              <div class="field-label">
+                <el-icon><Sort /></el-icon> Max Output Tokens
+                <span v-if="llmConfig.runtime_overrides?.max_output_tokens" class="runtime-tag">运行时</span>
+              </div>
+              <el-input-number
+                v-model="llmEdit.max_output_tokens"
+                :min="16" :max="32000" :step="16"
+                size="small"
+                controls-position="right"
+                style="width: 180px;"
+              />
             </div>
             <div class="config-field">
               <div class="field-label"><el-icon><WarningFilled /></el-icon> Mock Mode</div>
@@ -384,6 +403,7 @@
 import { onMounted, ref, computed, watch } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import {
+  Check,
   Cpu,
   CircleCheck,
   CircleClose,
@@ -408,6 +428,7 @@ import { algorithmsApi, settingsApi, type Algorithm, type LLMConfig, type LLMTes
 interface AlgorithmWithMeta extends Algorithm { _toggling?: boolean }
 
 const PlusIcon = Plus
+const CheckIcon = Check
 const RefreshIcon = Refresh
 const DocumentIcon = Document
 const ViewIcon = View
@@ -679,6 +700,28 @@ const llmConfig = ref<LLMConfig | null>(null)
 const llmLoading = ref(false)
 const llmTesting = ref(false)
 const llmTestResult = ref<LLMTestResult | null>(null)
+const llmEdit = ref({ max_input_tokens: 4000, max_output_tokens: 1000 })
+const llmSaving = ref(false)
+watch(llmConfig, (c) => {
+  if (c) {
+    llmEdit.value.max_input_tokens = c.max_input_tokens
+    llmEdit.value.max_output_tokens = c.max_output_tokens
+  }
+}, { immediate: true })
+async function saveLLM() {
+  llmSaving.value = true
+  try {
+    llmConfig.value = await settingsApi.updateLLM({
+      max_input_tokens: llmEdit.value.max_input_tokens,
+      max_output_tokens: llmEdit.value.max_output_tokens,
+    })
+    ElMessage.success('LLM 配置已保存并立即生效')
+  } catch {
+    /* */
+  } finally {
+    llmSaving.value = false
+  }
+}
 
 async function loadLLM() {
   llmLoading.value = true
@@ -1377,6 +1420,17 @@ onMounted(() => {
 }
 .config-field-control :deep(.el-input__wrapper):hover { box-shadow: 0 0 0 1px #cbd5e1 inset; }
 .config-field-control :deep(.el-input__wrapper.is-focus) { box-shadow: 0 0 0 1px #6366f1 inset, 0 0 0 3px rgba(99, 102, 241, 0.1); }
+.runtime-tag {
+  font-size: 10px;
+  font-weight: 600;
+  color: #4338ca;
+  background: #eef2ff;
+  border: 1px solid #c7d2fe;
+  padding: 1px 6px;
+  border-radius: 4px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
 .sensitive-tag {
   font-size: 10px;
   font-weight: 600;

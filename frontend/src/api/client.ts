@@ -59,6 +59,14 @@ export interface LLMConfig {
   max_input_tokens: number
   max_output_tokens: number
   mock_mode: boolean
+  runtime_max_output_tokens?: number | null
+  runtime_max_input_tokens?: number | null
+  runtime_overrides?: Record<string, boolean>
+}
+
+export interface LLMConfigUpdate {
+  max_input_tokens?: number
+  max_output_tokens?: number
 }
 
 export interface LLMTestResult {
@@ -121,6 +129,7 @@ export const algorithmsApi = {
 
 export const settingsApi = {
   getLLM: () => api.get<LLMConfig>('/settings/llm').then((r) => r.data),
+  updateLLM: (body: LLMConfigUpdate) => api.patch<LLMConfig>('/settings/llm', body).then((r) => r.data),
   testLLM: () => api.post<LLMTestResult>('/settings/llm/test').then((r) => r.data),
 }
 

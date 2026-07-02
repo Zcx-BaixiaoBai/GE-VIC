@@ -9,6 +9,7 @@ from typing import Any
 from openai import AsyncOpenAI
 
 from app.config import Settings
+from app.services.runtime_config import get as rt_get
 from app.utils.exceptions import LLMError
 
 
@@ -122,7 +123,7 @@ class LLMClient:
                     {"role": "user", "content": user_prompt},
                 ],
                 "temperature": temperature,
-                "max_tokens": self.settings.llm_max_output_tokens,
+                "max_tokens": int(rt_get("llm_max_output_tokens", self.settings.llm_max_output_tokens)),
             }
             if response_format is not None:
                 kwargs["response_format"] = response_format
@@ -181,7 +182,7 @@ class LLMClient:
                     {"role": "user", "content": content_parts},
                 ],
                 temperature=temperature,
-                max_tokens=self.settings.llm_max_output_tokens,
+                max_tokens=int(rt_get("llm_max_output_tokens", self.settings.llm_max_output_tokens)),
             )
             content = response.choices[0].message.content or ""
             usage = response.usage

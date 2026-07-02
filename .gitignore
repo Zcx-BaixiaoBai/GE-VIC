@@ -52,3 +52,6 @@ playwright/.cache/
 # Local secrets (LLM API keys etc.)
 .env.local
 .env.*.local
+
+# Runtime config (frontend-editable, persisted)
+.runtime-config.json
