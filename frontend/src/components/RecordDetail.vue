@@ -33,9 +33,36 @@
 
       <el-divider>识别结果</el-divider>
       <div v-if="record.summary">
-        <p><strong>一句话总结:</strong> {{ record.summary }}</p>
+        <p class="summary-line"><strong>一句话总结:</strong> {{ record.summary }}</p>
       </div>
-      <pre v-if="record.recognition" style="background: #f5f5f5; padding: 12px; border-radius: 4px;">{{ JSON.stringify(record.recognition, null, 2) }}</pre>
+
+      <!-- 多模态 LLM 结果 (有 observations) -->
+      <div v-if="isMultimodalResult && record.recognition" class="multimodal-result">
+        <div class="mm-header">
+          <span :class="['media-badge', 'media-' + (record.recognition.media_type || 'unknown')]">
+            {{ mediaLabel(record.recognition.media_type) }}
+          </span>
+          <p class="mm-description">{{ record.recognition.description }}</p>
+        </div>
+        <h4 class="mm-section-title">观察 ({{ record.recognition.observations?.length || 0 }})</h4>
+        <ul class="mm-observations">
+          <li v-for="(obs, i) in record.recognition.observations" :key="i" class="mm-obs">
+            <div class="mm-obs-head">
+              <span class="mm-obs-type">{{ obs.type }}</span>
+              <span class="mm-obs-label">{{ obs.label }}</span>
+              <span v-if="obs.confidence != null" class="mm-obs-conf">{{ Math.round((obs.confidence || 0) * 100) }}%</span>
+            </div>
+            <p v-if="obs.note" class="mm-obs-note">{{ obs.note }}</p>
+          </li>
+        </ul>
+        <details v-if="record.recognition._input || record.recognition._usage" class="mm-meta">
+          <summary>详细信息</summary>
+          <pre>{{ JSON.stringify({ _input: record.recognition._input, _usage: record.recognition._usage }, null, 2) }}</pre>
+        </details>
+      </div>
+
+      <!-- 通用 JSON 视图 -->
+      <pre v-else-if="record.recognition" class="json-block">{{ JSON.stringify(record.recognition, null, 2) }}</pre>
       <el-empty v-else description="无识别结果" />
 
       <el-divider>LLM 富化</el-divider>
@@ -81,7 +108,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, watch } from 'vue'
+import { ref, watch, computed } from 'vue'
 import StatusTag from './StatusTag.vue'
 import { recordsApi, type Inspection } from '../api/client'
 import { ElMessage } from 'element-plus'
@@ -102,6 +129,15 @@ const enriching = ref(false)
 
 watch(() => props.modelValue, (v) => (visible.value = v))
 watch(visible, (v) => emit('update:modelValue', v))
+
+const isMultimodalResult = computed(() => {
+  const r: any = props.record?.recognition
+  return r && Array.isArray(r.observations) && (r.media_type === 'image' || r.media_type === 'video')
+})
+function mediaLabel(t: string): string {
+  const m: Record<string, string> = { image: '图片', video: '视频', unknown: '未知' }
+  return m[t] || t
+}
 
 function formatTime(t: string | null | undefined): string {
   if (!t) return '-'

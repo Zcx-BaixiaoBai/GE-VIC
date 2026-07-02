@@ -167,6 +167,7 @@
               <el-option label="Mock 引擎 (本地测试)" value="mock" />
               <el-option label="Cloud API (阿里云/腾讯云等)" value="cloud_api" />
               <el-option label="海康超脑" value="hikvision_brain" />
+              <el-option label="多模态 LLM (把 LLM 当识别器)" value="multimodal_llm" />
               <el-option label="本地模型" value="local_model" />
             </el-select>
           </el-form-item>
@@ -457,6 +458,7 @@ function engineTypeLabel(t: string): string {
   const map: Record<string, string> = {
     cloud_api: '云 API',
     mock: 'Mock',
+    multimodal_llm: '多模态 LLM',
     hikvision_brain: '海康超脑',
     local_model: '本地模型',
   }
@@ -905,6 +907,8 @@ onMounted(() => {
 .engine-mock .engine-dot { background: #10b981; }
 .engine-hikvision_brain { color: #b45309; background: #fffbeb; border-color: #fde68a; }
 .engine-hikvision_brain .engine-dot { background: #f59e0b; }
+.engine-multimodal_llm { color: #6d28d9; background: #f5f3ff; border-color: #ddd6fe; }
+.engine-multimodal_llm .engine-dot { background: #8b5cf6; }
 .engine-local_model { color: #0e7490; background: #ecfeff; border-color: #cffafe; }
 .engine-local_model .engine-dot { background: #06b6d4; }
 

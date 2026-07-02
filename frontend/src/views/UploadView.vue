@@ -198,7 +198,7 @@ const isImage = computed(() => (fileList.value[0]?.raw?.type || '').startsWith('
 const isVideo = computed(() => (fileList.value[0]?.raw?.type || '').startsWith('video/'))
 
 function engineTypeLabel(t: string): string {
-  const m: Record<string, string> = { cloud_api: '云 API', mock: 'Mock', hikvision_brain: '海康超脑', local_model: '本地模型' }
+  const m: Record<string, string> = { cloud_api: '云 API', mock: 'Mock', hikvision_brain: '海康超脑', local_model: '本地模型', multimodal_llm: '多模态 LLM' }
   return m[t] || t
 }
 function formatSize(n: number): string {
@@ -293,6 +293,8 @@ function goDashboard() { router.push('/') }
 .engine-hikvision_brain .engine-dot { background: #f59e0b; }
 .engine-local_model { color: #0e7490; background: #ecfeff; border-color: #cffafe; }
 .engine-local_model .engine-dot { background: #06b6d4; }
+.engine-multimodal_llm { color: #6d28d9; background: #f5f3ff; border-color: #ddd6fe; }
+.engine-multimodal_llm .engine-dot { background: #8b5cf6; }
 .form-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
 .form-field { display: flex; flex-direction: column; gap: 6px; }
 .form-field label { font-size: 12.5px; font-weight: 500; color: #475569; }
