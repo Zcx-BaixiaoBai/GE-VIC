@@ -11,8 +11,38 @@ from app.database import create_engine, get_sessionmaker
 from app.engines import get_engine
 from app.models import Algorithm, Inspection
 from app.services.storage import StorageService
+from app.services.metrics import (
+    INSPECTIONS_TOTAL,
+    INSPECTION_DURATION,
+    ENGINE_CALL_ERRORS_TOTAL,
+    ENRICHMENT_TOTAL,
+    LLM_TOKENS_TOTAL,
+)
 
 logger = logging.getLogger(__name__)
+
+
+def _get_engine_type_sync(algorithm_code: str) -> str:
+    """同步查询算法的 engine_type (用于指标标签), 复用 task 的 engine"""
+    from app.database import get_global_sessionmaker
+    from sqlalchemy import select
+    from app.models import Algorithm
+    try:
+        sm = get_global_sessionmaker()
+        # 此函数实际在 async 上下文外调用, 用 run_sync
+        import asyncio
+        async def _query():
+            async with sm() as session:
+                stmt = select(Algorithm.engine_type).where(Algorithm.code == algorithm_code)
+                result = await session.execute(stmt)
+                return result.scalar_one_or_none()
+        try:
+            loop = asyncio.get_event_loop()
+            return loop.run_until_complete(_query()) or "unknown"
+        except RuntimeError:
+            return asyncio.run(_query()) or "unknown"
+    except Exception:
+        return "unknown"
 
 
 def _make_task_sessionmaker():
@@ -123,6 +153,7 @@ async def _run_inspection_async(record_id: int) -> dict:
         inspection.finished_at = now
         inspection.duration_ms = recognition.duration_ms
 
+        engine_type = algorithm.engine_type or "unknown"
         if not recognition.success:
             if inspection.retry_count >= 3:
                 inspection.status = "DEAD"
@@ -130,12 +161,31 @@ async def _run_inspection_async(record_id: int) -> dict:
                 inspection.status = "FAILED"
             inspection.error_code = recognition.error_code
             inspection.error_message = recognition.error_message
+            INSPECTIONS_TOTAL.labels(
+                algorithm=inspection.algorithm_code,
+                status=inspection.status,
+            ).inc()
+            if recognition.error_code:
+                ENGINE_CALL_ERRORS_TOTAL.labels(
+                    engine=engine_type,
+                    error_code=recognition.error_code,
+                ).inc()
         else:
             inspection.status = "SUCCESS"
             inspection.result = recognition.data
             inspection.summary = recognition.summary
             inspection.cost_estimate = recognition.cost_estimate
             inspection.enrichment_status = "ENRICHING"
+            # 指标: 成功 + 耗时 (§14.3)
+            INSPECTIONS_TOTAL.labels(
+                algorithm=inspection.algorithm_code,
+                status="SUCCESS",
+            ).inc()
+            if recognition.duration_ms:
+                INSPECTION_DURATION.labels(
+                    algorithm=inspection.algorithm_code,
+                    engine=engine_type,
+                ).observe(recognition.duration_ms / 1000.0)
 
         await session.commit()
 
@@ -188,9 +238,17 @@ async def _run_enrichment_async(record_id: int) -> dict:
                 enriched = await enrichment.enrich(algo_name, recognition, algorithm.engine_config)
                 inspection.llm_enrichment = enriched
                 inspection.enrichment_status = "ENRICHED"
+                ENRICHMENT_TOTAL.labels(status="ENRICHED").inc()
+                if enriched:
+                    tok = enriched.get("token_used", 0) or 0
+                    model = enriched.get("model", "unknown")
+                    if tok:
+                        LLM_TOKENS_TOTAL.labels(model=model, direction="prompt").inc(int(tok * 0.85))
+                        LLM_TOKENS_TOTAL.labels(model=model, direction="completion").inc(int(tok * 0.15))
             except Exception as e:
                 logger.exception("Enrichment failed for record %s", record_id)
                 inspection.enrichment_status = "ENRICH_FAILED"
+                ENRICHMENT_TOTAL.labels(status="ENRICH_FAILED").inc()
                 inspection.llm_enrichment = {
                     "error_code": "LLM_ERROR",
                     "error_message": str(e),

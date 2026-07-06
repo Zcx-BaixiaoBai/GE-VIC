@@ -189,6 +189,30 @@ def _encode_data_url(data: bytes, mime: str) -> str:
 
 
 
+def _strip_think_tags(text: str) -> str:
+    """移除 LLM 输出中的 <think>...</think> 块 (MiniMax, DeepSeek R1 等推理模型)"""
+    if not text:
+        return text
+    import re as _re
+    text = _re.sub(r"<think>.*?</think>", "", text, flags=_re.DOTALL)
+    text = _re.sub(r"<think>.*$", "", text, flags=_re.DOTALL)
+    return text.strip()
+
+
+def _clean_description(text: str) -> str:
+    """清理 description 字段: 去除 <think> 块、JSON 代码块标记, 截短"""
+    if not text:
+        return text
+    text = _strip_think_tags(text)
+    import re as _re
+    text = _re.sub(r"^```[a-zA-Z]*\n", "", text)
+    text = _re.sub(r"\n```\s*$", "", text)
+    text = text.strip()
+    if len(text) > 600:
+        text = text[:600].rstrip() + "…"
+    return text
+
+
 def _parse_markdown_report(content):
     """Parse a Markdown inspection report (LLM output) into structured fields."""
     import re
@@ -196,13 +220,42 @@ def _parse_markdown_report(content):
     COLON_CLASS = r"[：:，,、]"
     out = {
         "summary": "",
-        "description": content.strip() if content else "",
+        "description": "",  # 由下面填充: 标题后的第一个描述段
         "observations": [],
         "warnings": [],
         "_format": "markdown",
     }
     if not content:
         return out
+    text = content
+
+    # 描述: 提取标题后的第一个非标题非列表非表格段落 (最多 3 句, 400 字)
+    desc_lines = []
+    past_title = False
+    for _line in text.split("\n"):
+        _s = _line.strip()
+        if not _s:
+            continue
+        if _s.startswith("#"):
+            past_title = True
+            continue
+        if not past_title:
+            continue
+        # 排除列表 (以 - * • 开头后接空格) 和表格 (|) 和水平线 (---)
+        is_list = bool(re.match(r"^[-*\u2022]\s+", _s))
+        if is_list or _s.startswith("|") or _s.startswith("---"):
+            if desc_lines:  # 如果已经积累了一些描述, 遇到列表就停止
+                break
+            continue
+        # 去掉粗体/斜体标记
+        _s = re.sub(r"\*\*([^*]+)\*\*", r"\1", _s)
+        _s = re.sub(r"\*([^*]+)\*", r"\1", _s)
+        _s = _s.replace("**", "")
+        desc_lines.append(_s)
+        if len(desc_lines) >= 3:
+            break
+    if desc_lines:
+        out["description"] = " ".join(desc_lines)[:400]
 
     def _clean(s):
         if not s:
@@ -372,6 +425,9 @@ def _parse_llm_response(content: str) -> dict[str, Any]:
     3. 都失败则用 fallback (整段文本塞 description)
     """
     parsed = parse_json_response(content)
+    # 清理 description 字段 (去除 <think> 块、markdown 围栏)
+    if "description" in parsed and isinstance(parsed["description"], str):
+        parsed["description"] = _clean_description(parsed["description"])
     # 判断是否需要尝试 markdown 解析:
     # - JSON 解析失败 (没有 _input 字段) 或 observations 为空 + 文本含 ## 标题
     looks_like_markdown = "##" in content or "###" in content

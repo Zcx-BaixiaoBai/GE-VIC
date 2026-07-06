@@ -434,8 +434,8 @@ function goDashboard() { router.push('/') }
 .engine-dot { width: 5px; height: 5px; border-radius: 50%; }
 .engine-cloud_api { color: #4f46e5; background: #eef2ff; border-color: #e0e7ff; }
 .engine-cloud_api .engine-dot { background: #6366f1; }
-.engine-mock { color: #047857; background: #ecfdf5; border-color: #d1fae5; }
-.engine-mock .engine-dot { background: #10b981; }
+
+
 .engine-hikvision_brain { color: #b45309; background: #fffbeb; border-color: #fde68a; }
 .engine-hikvision_brain .engine-dot { background: #f59e0b; }
 .engine-local_model { color: #0e7490; background: #ecfeff; border-color: #cffafe; }

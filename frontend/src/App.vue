@@ -25,11 +25,7 @@
       </nav>
 
       <div class="brand-footer">
-        <div class="env-pill">
-          <span class="env-dot"></span>
-          演示模式
-        </div>
-        <div class="brand-meta">M0 · v0.1.0</div>
+        <div class="brand-meta">M1 · v1.0.0</div>
       </div>
     </aside>
 
@@ -149,26 +145,6 @@ button { font-family: inherit; }
   display: flex;
   flex-direction: column;
   gap: 6px;
-}
-.env-pill {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  padding: 4px 10px;
-  background: #fffbeb;
-  color: #b45309;
-  border: 1px solid #fde68a;
-  border-radius: 999px;
-  font-size: 11.5px;
-  font-weight: 600;
-  width: fit-content;
-}
-.env-dot {
-  width: 6px;
-  height: 6px;
-  border-radius: 50%;
-  background: #f59e0b;
-  box-shadow: 0 0 0 3px rgba(245, 158, 11, 0.18);
 }
 .brand-meta {
   font-size: 11.5px;

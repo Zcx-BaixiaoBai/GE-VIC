@@ -14,7 +14,7 @@ const props = defineProps<{
 
 const labels: Record<string, string> = {
   cloud_api: '云 API',
-  mock: 'Mock (模拟)',
+  mock: 'Mock',
   hikvision_brain: '海康超脑',
   local_model: '本地模型',
   multimodal_llm: '多模态 LLM',
@@ -23,7 +23,7 @@ const labels: Record<string, string> = {
 const label = computed(() => labels[props.type] || props.type || '未知引擎')
 
 const title = computed(() => {
-  if (props.type === 'mock') return '模拟数据 - 非真实识别结果'
+  if (props.type === 'mock') return 'Mock 引擎'
   if (props.type === 'multimodal_llm') return '真实 LLM 视觉识别'
   if (props.type === 'cloud_api') return '真实云端识别 API'
   if (props.type === 'local_model') return '真实本地模型推理'

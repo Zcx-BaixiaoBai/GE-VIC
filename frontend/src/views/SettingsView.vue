@@ -38,8 +38,8 @@
       <article class="stat-card" :class="`tint-amber`">
         <div class="stat-icon"><el-icon><MagicStick /></el-icon></div>
         <div class="stat-body">
-          <div class="stat-value">{{ mockCount }}</div>
-          <div class="stat-label">模拟引擎</div>
+          <div class="stat-value">{{ realAlgoCount }}</div>
+          <div class="stat-label">生产算法</div>
         </div>
       </article>
     </section>
@@ -167,7 +167,7 @@
           </el-form-item>
           <el-form-item label="引擎类型" prop="engine_type">
             <el-select v-model="createForm.engine_type" style="width: 100%">
-              <el-option label="Mock 引擎 (本地测试)" value="mock" />
+    
               <el-option label="Cloud API (阿里云/腾讯云等)" value="cloud_api" />
               <el-option label="海康超脑" value="hikvision_brain" />
               <el-option label="多模态 LLM (把 LLM 当识别器)" value="multimodal_llm" />
@@ -344,13 +344,7 @@
 
     <!-- LLM tab -->
     <section v-show="activeTab === 'llm'" class="content">
-      <div v-if="llmConfig?.mock_mode" class="banner banner-warning">
-        <el-icon><WarningFilled /></el-icon>
-        <div>
-          <strong>演示模式 (LLM_MOCK_MODE=true)</strong>
-          <p>LLM 客户端返回预设响应, 不调用真实 API。生产部署需关闭此开关并配置真实凭据。</p>
-        </div>
-      </div>
+
 
       <div class="llm-grid">
         <article class="llm-card">
@@ -399,13 +393,7 @@
               />
             </div>
             <div class="config-field">
-              <div class="field-label"><el-icon><WarningFilled /></el-icon> Mock Mode</div>
-              <div class="field-value">
-                <span :class="['status-tag', llmConfig.mock_mode ? 'inactive' : 'active']">
-                  <span class="status-dot"></span>
-                  {{ llmConfig.mock_mode ? '是 (演示模式)' : '否 (真实调用)' }}
-                </span>
-              </div>
+
             </div>
           </div>
         </article>
@@ -502,7 +490,7 @@
 
         <div>
           <strong>配置方式</strong>
-          <p>LLM 配置通过环境变量 (LLM_BASE_URL / LLM_API_KEY / LLM_MODEL / LLM_MOCK_MODE) 注入。修改配置需重启后端进程, 然后点击刷新查看新值。</p>
+          <p>LLM 配置通过环境变量 (LLM_BASE_URL / LLM_API_KEY / LLM_MODEL) 注入。修改配置需重启后端进程, 然后点击刷新查看新值。</p>
         </div>
       </div>
     </section>
@@ -554,7 +542,7 @@ const tabs = computed(() => [
   { key: 'llm' as const, label: 'LLM 富化', icon: MagicStick, badge: '' },
 ])
 
-const envLabel = computed(() => (llmConfig.value?.mock_mode ? '演示 (Mock)' : '生产 (真实调用)'))
+const envLabel = computed(() => '生产 (真实调用)')
 
 // 算法管理
 const algorithms = ref<AlgorithmWithMeta[]>([])
@@ -564,7 +552,7 @@ const filterKey = ref<'all' | 'active' | 'inactive'>('all')
 
 const activeCount = computed(() => algorithms.value.filter((a) => a.is_active).length)
 const cloudCount = computed(() => algorithms.value.filter((a) => a.engine_type === 'cloud_api').length)
-const mockCount = computed(() => algorithms.value.filter((a) => a.engine_type === 'mock').length)
+const realAlgoCount = computed(() => algorithms.value.filter((a) => a.is_active).length)
 
 const filteredAlgos = computed(() => {
   const term = searchTerm.value.trim().toLowerCase()
@@ -618,7 +606,7 @@ const ENGINE_SCHEMAS: Record<string, EngineFieldDef[]> = {
     { key: 'max_input_tokens', label: '上下文限制 (tokens)', type: 'number', min: 256, step: 256, default: 0, hint: '留空使用全局 LLM_MAX_INPUT_TOKENS · 现代模型可支持 128K~1M+ (e.g. GPT-4 128K, Claude 200K, Gemini 1M)' },
     { key: 'max_output_tokens', label: '输出上限 (tokens)', type: 'number', min: 64, step: 64, default: 0, hint: '留空使用全局 LLM_MAX_OUTPUT_TOKENS · 大值会自动延长超时 · 上限取决于模型 (推理模型建议 16K-64K)' },
     { key: 'llm_timeout', label: '请求超时 (秒)', type: 'number', min: 30, max: 600, step: 10, default: 0, hint: '留空则按 max_output_tokens 自动推导 (60s + 60ms/tok, 推理模型 +30s, 上限 600s)' },
-    { key: 'llm_mock_mode', label: '本算法强制 Mock 模式', type: 'switch', default: false, hint: '开启后该算法返回预设数据, 不调真实 LLM (适合演示)' },
+
   ],
   cloud_api: [
     { key: 'provider', label: '厂商', type: 'select', default: 'aliyun', options: [
@@ -631,10 +619,6 @@ const ENGINE_SCHEMAS: Record<string, EngineFieldDef[]> = {
     { key: 'access_key_id', label: 'Access Key ID', type: 'text', default: '', placeholder: 'AKID...' },
     { key: 'access_key_secret', label: 'Access Key Secret', type: 'password', default: '', sensitive: true, hint: '写入数据库前会自动剔除 secret 字段' },
     { key: 'timeout_sec', label: '超时 (秒)', type: 'number', min: 5, max: 120, step: 5, default: 30 },
-  ],
-  mock: [
-    { key: 'delay_ms', label: '模拟耗时 (ms)', type: 'number', min: 0, max: 10000, step: 100, default: 500, hint: '识别模拟的延迟, 演示用' },
-    { key: 'defects_count', label: '返回缺陷数', type: 'number', min: 0, max: 10, step: 1, default: 1 },
   ],
   hikvision_brain: [
     { key: 'endpoint', label: '海康超脑 API 地址', type: 'text', default: '', placeholder: 'https://<host>:<port>' },
@@ -661,8 +645,8 @@ const createForm = ref({
   code: '',
   name: '',
   category: '',
-  engine_type: 'mock',
-  engineConfig: buildDefaultConfig('mock'),
+  engine_type: 'multimodal_llm' as string,
+  engineConfig: buildDefaultConfig('multimodal_llm'),
 })
 const createRules = {
   code: [
@@ -688,8 +672,8 @@ const editForm = ref({
   name: '',
   category: '',
   description: '',
-  engine_type: 'mock' as string,
   is_active: true,
+  engine_type: '' as string,
   engineConfig: {} as Record<string, any>,
 })
 const editRules = {
@@ -713,7 +697,6 @@ function reloadAll() {
 function engineTypeLabel(t: string): string {
   const map: Record<string, string> = {
     cloud_api: '云 API',
-    mock: 'Mock',
     multimodal_llm: '多模态 LLM',
     hikvision_brain: '海康超脑',
     local_model: '本地模型',
@@ -950,8 +933,8 @@ function openCreateDialog() {
     code: '',
     name: '',
     category: '',
-    engine_type: 'mock',
-    engineConfig: buildDefaultConfig('mock'),
+    engine_type: 'multimodal_llm',
+    engineConfig: buildDefaultConfig('multimodal_llm'),
   }
   showRawJson.value = false
   syncConfigToJson()
@@ -1369,8 +1352,8 @@ onMounted(() => {
 }
 .engine-cloud_api { color: #4f46e5; background: #eef2ff; border-color: #e0e7ff; }
 .engine-cloud_api .engine-dot { background: #6366f1; }
-.engine-mock { color: #047857; background: #ecfdf5; border-color: #d1fae5; }
-.engine-mock .engine-dot { background: #10b981; }
+
+
 .engine-hikvision_brain { color: #b45309; background: #fffbeb; border-color: #fde68a; }
 .engine-hikvision_brain .engine-dot { background: #f59e0b; }
 .engine-multimodal_llm { color: #6d28d9; background: #f5f3ff; border-color: #ddd6fe; }
