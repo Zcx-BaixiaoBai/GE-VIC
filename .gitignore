@@ -72,3 +72,6 @@ _v11_clean.md
 _v11_temp.md
 _v11_temp.txt
 /screenshots/
+
+# One-off dev/debug Python scripts (含硬编码凭据 / monkey-patch 源文件)
+scripts/*.py
