@@ -5,6 +5,7 @@ from uuid import uuid4
 
 from sqlalchemy import (
     BigInteger,
+    Boolean,
     DateTime,
     Float,
     Index,
@@ -47,6 +48,10 @@ class Inspection(Base, TimestampMixin):
     file_hash: Mapped[str | None] = mapped_column(String(64), index=True, nullable=True)
     file_size: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     file_type: Mapped[str | None] = mapped_column(String(16), nullable=True)
+
+    # 批量/联合分析: 一次上传多张图, 引擎一次性看到所有图
+    is_batch: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, server_default=text("false"))
+    batch_files: Mapped[list[dict[str, Any]]] = mapped_column(JSONB, nullable=False, default=list, server_default=text("'[]'::jsonb"))
 
     # 业务元数据
     inspector_id: Mapped[str | None] = mapped_column(String(64), index=True, nullable=True)

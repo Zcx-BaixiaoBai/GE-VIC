@@ -19,6 +19,7 @@ from app.schemas.inspection import (
     StatusBreakdown,
 )
 from app.services.audit import AuditAction, AuditResult, AuditService
+from app.config import get_settings
 from app.tasks.celery_app import celery_app
 
 router = APIRouter(prefix="/records", tags=["records"])
@@ -40,6 +41,21 @@ def _to_inspection_out(insp: Inspection, file_url: str | None = None) -> Inspect
     if insp.error_code or insp.error_message:
         error_payload = {"code": insp.error_code, "message": insp.error_message}
 
+    # 批次文件列表: 给每个文件生成可访问 URL
+    batch_files_payload: list[dict[str, Any]] | None = None
+    if getattr(insp, "is_batch", False) and getattr(insp, "batch_files", None):
+        batch_files_payload = []
+        for i, bf in enumerate(insp.batch_files or []):
+            batch_files_payload.append({
+                "index": i,
+                "url": f"/api/v1/records/{insp.id}/file/{i}",
+                "filename": bf.get("filename"),
+                "mime_type": bf.get("mime_type"),
+                "file_type": bf.get("file_type"),
+                "size": bf.get("file_size"),
+                "hash": bf.get("file_hash"),
+            })
+
     return InspectionOut(
         id=insp.id,
         algorithm_code=insp.algorithm_code,
@@ -60,6 +76,9 @@ def _to_inspection_out(insp: Inspection, file_url: str | None = None) -> Inspect
         summary=insp.summary,
         llm_enrichment=insp.llm_enrichment,
         error=error_payload,
+        is_batch=bool(getattr(insp, "is_batch", False)),
+        batch_size=len(insp.batch_files) if getattr(insp, "is_batch", False) and getattr(insp, "batch_files", None) else 0,
+        batch_files=batch_files_payload,
     )
 
 
@@ -328,11 +347,20 @@ async def enrich_record(
 
     inspection.enrichment_status = "ENRICHING"
 
-    celery_app.send_task(
-        "app.tasks.inspection.enrich_inspection",
-        kwargs={"record_id": record_id},
-        queue="stats_queue",
-    )
+    settings_obj = get_settings()
+    if settings_obj.task_sync_mode:
+        # sync 模式: 直接 await (无 Celery worker 也跑得通)
+        from app.tasks.inspection import _run_enrichment_async
+        try:
+            await _run_enrichment_async(record_id)
+        except Exception as e:
+            logger.exception("Sync enrichment failed for record %s", record_id)
+    else:
+        celery_app.send_task(
+            "app.tasks.inspection.enrich_inspection",
+            kwargs={"record_id": record_id},
+            queue="stats_queue",
+        )
 
     audit = AuditService(session)
     await audit.log(

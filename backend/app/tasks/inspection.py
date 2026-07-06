@@ -75,12 +75,40 @@ async def _run_inspection_async(record_id: int) -> dict:
         # 5. Call engine
         try:
             engine = get_engine(algorithm.engine_type)
-            recognition = await engine.recognize(
-                file_bytes=file_bytes,
-                filename=inspection.request_meta.get("filename", "upload.bin") if inspection.request_meta else "upload.bin",
-                meta=inspection.request_meta or {},
-                config=algorithm.engine_config or {},
-            )
+            is_batch = bool(inspection.is_batch) and bool(inspection.batch_files)
+            if is_batch:
+                # 联合分析: 下载所有文件, 一次性发给引擎
+                batch_files = []
+                primary = {
+                    "bytes": file_bytes,
+                    "filename": inspection.request_meta.get("filename", "upload.bin") if inspection.request_meta else "upload.bin",
+                    "mime": inspection.request_meta.get("mime_type") if inspection.request_meta else None,
+                    "meta": inspection.request_meta or {},
+                }
+                batch_files.append(primary)
+                for bf in inspection.batch_files or []:
+                    try:
+                        b_bytes = storage.download_file(bf["object_key"])
+                        batch_files.append({
+                            "bytes": b_bytes,
+                            "filename": bf.get("filename", "batch.bin"),
+                            "mime": bf.get("mime_type"),
+                            "meta": bf.get("meta") or {},
+                        })
+                    except Exception as e:
+                        logger.warning("Failed to download batch file %s: %s", bf.get("object_key"), e)
+                recognition = await engine.recognize_batch(
+                    files=batch_files,
+                    meta=inspection.request_meta or {},
+                    config=algorithm.engine_config or {},
+                )
+            else:
+                recognition = await engine.recognize(
+                    file_bytes=file_bytes,
+                    filename=inspection.request_meta.get("filename", "upload.bin") if inspection.request_meta else "upload.bin",
+                    meta=inspection.request_meta or {},
+                    config=algorithm.engine_config or {},
+                )
         except Exception as e:
             logger.exception("Engine call failed for record %s", record_id)
             inspection.status = "FAILED"
@@ -157,7 +185,7 @@ async def _run_enrichment_async(record_id: int) -> dict:
 
             enrichment = EnrichmentService(llm)
             try:
-                enriched = await enrichment.enrich(algo_name, recognition)
+                enriched = await enrichment.enrich(algo_name, recognition, algorithm.engine_config)
                 inspection.llm_enrichment = enriched
                 inspection.enrichment_status = "ENRICHED"
             except Exception as e:

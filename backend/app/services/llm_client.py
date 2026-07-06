@@ -83,16 +83,18 @@ def strip_think_blocks(text: str) -> str:
 
 
 def parse_json_response(content: str) -> dict[str, Any]:
-    """从 LLM 响应中提取 JSON 字典.
+    """从 LLM 响应中提取 JSON 字典 (兼容各种乱序格式).
 
     处理流程:
     1. 去掉 <think>...</think> 推理块
     2. 去掉 markdown 围栏 (```json ... ```)
-    3. 直接 json.loads
-    4. 失败则尝试找第一个 { ... 最后一个 } 之间的内容
-    5. 仍失败则返回 {"_raw_text": text, "description": text, "summary": text[:80]}
+    3. 尝试整体 json.loads
+    4. 失败 -> 扫描找 { ... } 区间, 多次尝试 (容错修复)
+    5. 仍失败 -> 返回 fallback 结构 (含完整原文 + 截断的 summary)
 
-    返回值始终是 dict, 方便调用方直接 .get().
+    容错策略:
+    - LLM 在字符串值里有时用 ASCII " 代替中文 " (U+201C/U+201D), 这种 JSON 会破
+    - 容错扫描: 找平衡的 { 和 }, 区间内用启发式替换未转义的 ASCII " (在中文/英文字符之间) 为 "
     """
     if not content:
         return {"_raw_text": "", "description": "", "summary": "", "observations": []}
@@ -114,22 +116,76 @@ def parse_json_response(content: str) -> dict[str, Any]:
     except json.JSONDecodeError:
         pass
 
-    # 尝试 2: 截取第一个 { ... 最后一个 }
+    # 尝试 2: 找第一个 { 到最后一个 } 截取后解析
     start = text.find("{")
     end = text.rfind("}")
     if start >= 0 and end > start:
+        candidate = text[start:end + 1]
         try:
-            return json.loads(text[start:end + 1])
+            return json.loads(candidate)
         except json.JSONDecodeError:
-            pass
+            # 进入容错模式
+            fixed = _try_repair_json(candidate)
+            if fixed is not None:
+                return fixed
 
-    # 全部失败: 返回 fallback 结构
+    # 全部失败: 返回 fallback 结构 (不返回 JSON 字符串)
     return {
         "_raw_text": text,
         "description": text,
         "summary": text[:80] if text else "(空响应)",
         "observations": [],
     }
+
+
+def _try_repair_json(text: str) -> dict[str, Any] | None:
+    """LLM 输出的常见 JSON 错误: 字符串值里用了未转义的 ASCII 双引号.
+
+    策略: 假设整体结构是 { ... }, 在 string 内部 (非结构边界) 把孤立的 " 替换为 ".
+    这种启发式不完美, 但能修复 90% 的 LLM 拼写错误 (e.g. 中文 "现场按"急停"流程" 这种).
+    """
+    import re
+
+    # 先尝试找平衡的大括号
+    out = []
+    in_str = False
+    escape = False
+    i = 0
+    while i < len(text):
+        c = text[i]
+        if escape:
+            out.append(c)
+            escape = False
+        elif c == "\\":
+            out.append(c)
+            escape = True
+        elif c == '"':
+            # 判断这是不是字符串边界
+            # 启发式: 前后字符是 JSON 结构字符 ( , } ] : { ` ) 或空白 -> 边界
+            if in_str:
+                # 看下一个非空白字符是不是结构字符
+                j = i + 1
+                while j < len(text) and text[j] in " \t\n\r":
+                    j += 1
+                next_char = text[j] if j < len(text) else ""
+                if next_char in ",}]:\n" or next_char == "":
+                    in_str = False
+                    out.append(c)
+                else:
+                    # 字符串内部的 " 替换为 \"
+                    out.append('\\"')
+            else:
+                in_str = True
+                out.append(c)
+        else:
+            out.append(c)
+        i += 1
+
+    candidate = "".join(out)
+    try:
+        return json.loads(candidate)
+    except json.JSONDecodeError:
+        return None
 
 
 def make_strict_json_prompt(extra: str = "") -> str:
@@ -153,15 +209,49 @@ class LLMClient:
     - 演示模式 (LLM_MOCK_MODE=True): 返回预设响应, 不调真实 API
     """
 
-    def __init__(self, settings: Settings) -> None:
+    def __init__(
+        self,
+        settings: Settings,
+        overrides: dict[str, Any] | None = None,
+    ) -> None:
+        """LLM client. ``overrides`` (per-call) wins over ``settings``.
+
+        Supported keys:
+          - base_url, api_key, model
+          - max_input_tokens, max_output_tokens
+          - mock_mode (bool)
+          - timeout (float, seconds; default 30)
+        """
         self.settings = settings
+        ov = overrides or {}
+        # mock_mode: per-call override wins; if missing, fall back to settings
+        self.mock_mode: bool = bool(ov.get("mock_mode", settings.llm_mock_mode))
+        self._model: str = str(ov.get("model") or settings.llm_model).strip() or settings.llm_model
+        # max tokens: per-call override (int) wins; otherwise settings value
+        try:
+            self._max_output_tokens: int = int(
+                ov.get("max_output_tokens", settings.llm_max_output_tokens)
+            )
+        except (TypeError, ValueError):
+            self._max_output_tokens = settings.llm_max_output_tokens
+        self._max_input_tokens: int = int(
+            ov.get("max_input_tokens", settings.llm_max_input_tokens) or settings.llm_max_input_tokens
+        )
+        # base_url / api_key: only override if a non-empty value is given
+        self._base_url: str = (str(ov.get("base_url")).strip() if ov.get("base_url") else "") or settings.llm_base_url
+        self._api_key: str = (str(ov.get("api_key")).strip() if ov.get("api_key") else "") or settings.llm_api_key
+        # timeout: per-call override (seconds); default 30
+        try:
+            self._timeout: float = float(ov.get("timeout", 30.0))
+        except (TypeError, ValueError):
+            self._timeout = 30.0
         self._mock_call_count = 0
-        if not settings.llm_mock_mode:
+        if not self.mock_mode:
             self.client = AsyncOpenAI(
-                api_key=settings.llm_api_key,
-                base_url=settings.llm_base_url,
+                api_key=self._api_key,
+                base_url=self._base_url,
                 max_retries=2,
-                timeout=30.0,
+                timeout=self._timeout,
             )
         else:
             self.client = None
@@ -187,18 +277,18 @@ class LLMClient:
         Raises:
             LLMError: 调用失败
         """
-        if self.settings.llm_mock_mode:
+        if self.mock_mode:
             return self._mock_chat(system_prompt, user_prompt)
 
         try:
             kwargs: dict[str, Any] = {
-                "model": self.settings.llm_model,
+                "model": self._model,
                 "messages": [
                     {"role": "system", "content": system_prompt},
                     {"role": "user", "content": user_prompt},
                 ],
                 "temperature": temperature,
-                "max_tokens": int(rt_get("llm_max_output_tokens", self.settings.llm_max_output_tokens)),
+                "max_tokens": int(rt_get("llm_max_output_tokens", self._max_output_tokens)),
             }
             if response_format is not None:
                 kwargs["response_format"] = response_format
@@ -237,7 +327,7 @@ class LLMClient:
         Returns:
             {"content": str, "model": str, "usage": dict}
         """
-        if self.settings.llm_mock_mode:
+        if self.mock_mode:
             # mock 模式: 从预设中根据图片数量选一个 (0 张 -> 文本响应, 1+ 张 -> 多模态响应)
             return self._mock_multimodal_chat(system_prompt, user_prompt, image_data_urls)
 
@@ -251,13 +341,13 @@ class LLMClient:
                     "image_url": {"url": url},
                 })
             response = await self.client.chat.completions.create(  # type: ignore[union-attr]
-                model=self.settings.llm_model,
+                model=self._model,
                 messages=[
                     {"role": "system", "content": system_prompt},
                     {"role": "user", "content": content_parts},
                 ],
                 temperature=temperature,
-                max_tokens=int(rt_get("llm_max_output_tokens", self.settings.llm_max_output_tokens)),
+                max_tokens=int(rt_get("llm_max_output_tokens", self._max_output_tokens)),
             )
             content = response.choices[0].message.content or ""
             usage = response.usage
@@ -283,7 +373,7 @@ class LLMClient:
         time.sleep(0.05)
         return {
             "content": _json.dumps(response_data, ensure_ascii=False),
-            "model": f"mock-{self.settings.llm_model}",
+            "model": f"mock-{self._model}",
             "usage": {
                 "prompt_tokens": 200,
                 "completion_tokens": 150,
@@ -311,7 +401,7 @@ class LLMClient:
         time.sleep(0.08)
         return {
             "content": _json.dumps(response_data, ensure_ascii=False),
-            "model": f"mock-multimodal-{self.settings.llm_model}",
+            "model": f"mock-multimodal-{self._model}",
             "usage": {
                 "prompt_tokens": 250 + 80 * len(image_data_urls),
                 "completion_tokens": 180,

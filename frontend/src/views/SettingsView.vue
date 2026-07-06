@@ -132,6 +132,7 @@
             <span class="muted small">ID #{{ algo.code }}</span>
             <div class="algo-actions">
               <el-button :icon="ViewIcon" size="small" text @click="showConfig(algo)">查看配置</el-button>
+              <el-button :icon="TestIcon" size="small" text type="primary" :loading="algo._testing" @click="onTestAlgo(algo)">测试</el-button>
               <el-button :icon="DeleteIcon" size="small" text type="danger" @click="onDelete(algo)">删除</el-button>
             </div>
           </footer>
@@ -145,6 +146,8 @@
         width="600"
         class="settings-dialog"
         :close-on-click-modal="false"
+        align-center
+        :style="{ maxHeight: '88vh' }"
       >
         <el-form
           :model="createForm"
@@ -181,25 +184,29 @@
 
             <!-- 表单模式 -->
             <div v-if="!showRawJson" class="config-fields">
-              <div v-for="field in currentSchema" :key="field.key" class="config-field-row">
+              <div v-for="field in currentSchema" :key="field.key || ('div-' + field.label)" class="config-field-row" :class="{ 'config-field-divider-row': field.type === 'divider' }">
+                <div v-if="field.type === 'divider'" class="config-field-divider-text">{{ field.label }}</div>
+                <template v-else>
                 <label class="config-field-label">
                   {{ field.label }}
                   <span v-if="field.sensitive" class="sensitive-tag">敏感</span>
                 </label>
                 <div class="config-field-control">
-                  <el-input v-if="field.type === 'text'" v-model="createForm.engineConfig[field.key]" :placeholder="field.placeholder" clearable />
-                  <el-input v-else-if="field.type === 'password'" v-model="createForm.engineConfig[field.key]" type="password" :placeholder="field.placeholder || '输入后写入数据库'" show-password clearable />
-                  <el-input-number v-else-if="field.type === 'number'" v-model="createForm.engineConfig[field.key]" :min="field.min" :max="field.max" :step="field.step || 1" :placeholder="String(field.default)" controls-position="right" style="width: 100%" />
+                  <el-input v-if="field.type === 'text'" v-model="createForm.engineConfig[field.key!]" :placeholder="field.placeholder" clearable />
+                  <el-input v-else-if="field.type === 'password'" v-model="createForm.engineConfig[field.key!]" type="password" :placeholder="field.placeholder || '输入后写入数据库'" show-password clearable />
+                  <el-input-number v-else-if="field.type === 'number'" v-model="createForm.engineConfig[field.key!]" :min="field.min" :max="field.max" :step="field.step || 1" :placeholder="String(field.default)" controls-position="right" style="width: 100%" />
                   <div v-else-if="field.type === 'slider'" class="slider-wrap">
-                    <el-slider v-model="createForm.engineConfig[field.key]" :min="field.min || 0" :max="field.max || 1" :step="field.step || 0.1" show-input :show-input-controls="false" />
-                    <code class="slider-value">{{ Number(createForm.engineConfig[field.key]).toFixed(1) }}</code>
+                    <el-slider v-model="createForm.engineConfig[field.key!]" :min="field.min || 0" :max="field.max || 1" :step="field.step || 0.1" show-input :show-input-controls="false" />
+                    <code class="slider-value">{{ Number(createForm.engineConfig[field.key!]).toFixed(1) }}</code>
                   </div>
-                  <el-input v-else-if="field.type === 'textarea'" v-model="createForm.engineConfig[field.key]" type="textarea" :rows="3" :placeholder="field.placeholder" />
-                  <el-select v-else-if="field.type === 'select' && field.options" v-model="createForm.engineConfig[field.key]" style="width: 100%">
+                  <el-input v-else-if="field.type === 'textarea'" v-model="createForm.engineConfig[field.key!]" type="textarea" :rows="3" :placeholder="field.placeholder" />
+                  <el-select v-else-if="field.type === 'select' && field.options" v-model="createForm.engineConfig[field.key!]" style="width: 100%">
                     <el-option v-for="opt in field.options" :key="opt.value" :label="opt.label" :value="opt.value" />
                   </el-select>
+                  <el-switch v-else-if="field.type === 'switch'" v-model="createForm.engineConfig[field.key!]" />
                   <span v-if="field.hint" class="form-hint">{{ field.hint }}</span>
                 </div>
+                </template>
               </div>
               <div v-if="currentSchema.length === 0" class="muted small">此引擎类型暂无配置项, 使用默认参数</div>
             </div>
@@ -222,44 +229,116 @@
         </template>
       </el-dialog>
 
-      <!-- 配置详情对话框 -->
+      <!-- 编辑算法配置对话框 -->
       <el-dialog
         v-model="configDialogVisible"
-        :title="`算法配置: ${selectedAlgo?.code || ''}`"
+        :title="`编辑算法: ${editForm.code || ''}`"
         width="720"
         class="settings-dialog"
+        :close-on-click-modal="false"
+        align-center
+        :style="{ maxHeight: '88vh' }"
       >
-        <div v-if="selectedAlgo" v-loading="configLoading">
-          <el-descriptions :column="2" border class="info-table">
-            <el-descriptions-item label="Code">
-              <code>{{ selectedAlgo.code }}</code>
-            </el-descriptions-item>
-            <el-descriptions-item label="版本">v{{ selectedAlgo.version }}</el-descriptions-item>
-            <el-descriptions-item label="名称">{{ selectedAlgo.name }}</el-descriptions-item>
-            <el-descriptions-item label="类别">{{ selectedAlgo.category || '-' }}</el-descriptions-item>
-            <el-descriptions-item label="引擎类型" :span="2">
-              <span :class="['engine-badge', `engine-${selectedAlgo.engine_type}`]">
+        <div v-if="editForm.code" v-loading="configLoading">
+          <el-form
+            :model="editForm"
+            label-width="100"
+            :rules="editRules"
+            ref="editFormRef"
+            class="create-form"
+          >
+            <el-form-item label="Code">
+              <code class="algo-code-readonly">{{ editForm.code }}</code>
+              <span class="form-hint">Code 不可修改</span>
+            </el-form-item>
+            <el-form-item label="名称" prop="name">
+              <el-input v-model="editForm.name" placeholder="算法显示名称" clearable />
+            </el-form-item>
+            <el-form-item label="类别">
+              <el-input v-model="editForm.category" placeholder="如 通用 / 输配电 / 风电" clearable />
+            </el-form-item>
+            <el-form-item label="描述">
+              <el-input v-model="editForm.description" type="textarea" :rows="2" placeholder="算法的用途说明" />
+            </el-form-item>
+            <el-form-item label="引擎">
+              <span :class="['engine-badge', `engine-${editForm.engine_type}`]">
                 <span class="engine-dot"></span>
-                {{ engineTypeLabel(selectedAlgo.engine_type) }}
+                {{ engineTypeLabel(editForm.engine_type) }}
               </span>
-            </el-descriptions-item>
-            <el-descriptions-item label="状态" :span="2">
-              <span :class="['status-tag', selectedAlgo.is_active ? 'active' : 'inactive']">
-                <span class="status-dot"></span>
-                {{ selectedAlgo.is_active ? '已启用' : '已停用' }}
-              </span>
-            </el-descriptions-item>
-            <el-descriptions-item label="描述" :span="2">
-              {{ selectedAlgo.description || '—' }}
-            </el-descriptions-item>
-          </el-descriptions>
+              <span class="form-hint">引擎类型不可修改 (要换引擎请删除重建)</span>
+            </el-form-item>
+            <el-form-item label="启用">
+              <el-switch v-model="editForm.is_active" />
+              <span class="form-hint">停用后无法被上传页选中</span>
+            </el-form-item>
 
-          <h4 class="json-title">引擎配置 <span class="muted small">engine_config</span></h4>
-          <pre class="json-block">{{ formatJson(selectedAlgo.engine_config) }}</pre>
+            <el-divider content-position="left">
+              <span class="section-title">引擎配置 <span class="muted small">engine_config</span></span>
+            </el-divider>
 
-          <h4 v-if="selectedAlgo.request_schema" class="json-title">请求 schema <span class="muted small">request_schema</span></h4>
-          <pre v-if="selectedAlgo.request_schema" class="json-block">{{ formatJson(selectedAlgo.request_schema) }}</pre>
+            <div v-if="editSchema.length === 0" class="muted small">此引擎类型暂无配置项, 使用默认参数</div>
+
+            <div v-else>
+              <div class="config-form-header">
+                <span class="muted small">{{ editSchema.length }} 个字段</span>
+                <el-button text :icon="editShowRawJson ? ViewIcon : DocumentIcon" size="small" @click="onEditToggleJson">
+                  {{ editShowRawJson ? '返回表单' : '高级: 查看/编辑 JSON' }}
+                </el-button>
+              </div>
+
+              <div v-if="!editShowRawJson" class="config-fields">
+                <div v-for="field in editSchema" :key="field.key || ('div-' + field.label)" class="config-field-row" :class="{ 'config-field-divider-row': field.type === 'divider' }">
+                  <div v-if="field.type === 'divider'" class="config-field-divider-text">{{ field.label }}</div>
+                  <template v-else>
+                    <label class="config-field-label">
+                      {{ field.label }}
+                      <span v-if="field.sensitive" class="sensitive-tag">敏感</span>
+                    </label>
+                    <div class="config-field-control">
+                      <el-input v-if="field.type === 'text'" v-model="editForm.engineConfig[field.key!]" :placeholder="field.placeholder" clearable />
+                      <el-input v-else-if="field.type === 'password'" v-model="editForm.engineConfig[field.key!]" type="password" :placeholder="field.placeholder || '留空使用全局配置'" show-password clearable />
+                      <el-input-number v-else-if="field.type === 'number'" v-model="editForm.engineConfig[field.key!]" :min="field.min" :max="field.max" :step="field.step || 1" :placeholder="String(field.default)" controls-position="right" style="width: 100%" />
+                      <div v-else-if="field.type === 'slider'" class="slider-wrap">
+                        <el-slider v-model="editForm.engineConfig[field.key!]" :min="field.min || 0" :max="field.max || 1" :step="field.step || 0.1" show-input :show-input-controls="false" />
+                        <code class="slider-value">{{ Number(editForm.engineConfig[field.key!]).toFixed(1) }}</code>
+                      </div>
+                      <el-input v-else-if="field.type === 'textarea'" v-model="editForm.engineConfig[field.key!]" type="textarea" :rows="3" :placeholder="field.placeholder" />
+                      <el-select v-else-if="field.type === 'select' && field.options" v-model="editForm.engineConfig[field.key!]" style="width: 100%">
+                        <el-option v-for="opt in field.options" :key="opt.value" :label="opt.label" :value="opt.value" />
+                      </el-select>
+                      <el-switch v-else-if="field.type === 'switch'" v-model="editForm.engineConfig[field.key!]" />
+                      <span v-if="field.hint" class="form-hint">{{ field.hint }}</span>
+                    </div>
+                  </template>
+                </div>
+              </div>
+
+              <el-input
+                v-else
+                v-model="editEngineConfigJsonStr"
+                type="textarea"
+                :rows="10"
+                :placeholder="JSON.stringify(buildDefaultConfig(editForm.engine_type), null, 2)"
+                class="config-json-textarea"
+                @blur="onEditJsonBlur"
+              />
+              <span v-if="editShowRawJson" class="form-hint">直接编辑 JSON, 失焦后自动同步到表单</span>
+            </div>
+          </el-form>
         </div>
+        <template #footer>
+          <div class="edit-dialog-footer">
+            <el-button :icon="TestIcon" :loading="editTesting" @click="onEditTestConfig">
+              测试当前配置
+            </el-button>
+            <div class="footer-right">
+              <el-button @click="onCloseEdit">取消</el-button>
+              <el-button type="primary" :loading="editSaving" @click="onSaveEdit">
+                保存修改
+              </el-button>
+            </div>
+          </div>
+        </template>
       </el-dialog>
     </section>
 
@@ -388,8 +467,39 @@
         </article>
       </div>
 
+      <!-- 算法测试结果对话框 -->
+      <el-dialog v-model="testResultVisible" title="算法测试结果" width="540" class="settings-dialog algo-test-dialog" align-center :style="{ maxHeight: '88vh' }">
+        <div v-if="testResult" class="algo-test-result" :class="testResult.success ? 'success' : 'fail'">
+          <div class="algo-test-header">
+            <el-icon class="algo-test-icon">
+              <component :is="testResult.success ? CircleCheck : CircleClose" />
+            </el-icon>
+            <div>
+              <h3>{{ testResult.success ? '连通性 OK' : '连通性失败' }}</h3>
+              <p class="muted small">{{ testResult.code }} · {{ testResult.name }}</p>
+            </div>
+          </div>
+          <p class="algo-test-message">{{ testResult.message }}</p>
+          <dl class="algo-test-meta">
+            <div><dt>引擎</dt><dd>{{ testResult.engineType }}</dd></div>
+            <div v-if="testResult.model"><dt>模型</dt><dd><code>{{ testResult.model }}</code></dd></div>
+            <div v-if="testResult.durationMs !== null"><dt>耗时</dt><dd>{{ testResult.durationMs }} ms</dd></div>
+            <div v-if="testResult.totalTokens !== null"><dt>Tokens</dt><dd>
+              <span class="token-pill">in {{ testResult.promptTokens ?? 0 }}</span>
+              <span class="token-pill">out {{ testResult.completionTokens ?? 0 }}</span>
+              <span class="token-pill total">{{ testResult.totalTokens ?? 0 }}</span>
+            </dd></div>
+            <div v-if="testResult.errorCode"><dt>错误码</dt><dd><code class="err-code">{{ testResult.errorCode }}</code></dd></div>
+          </dl>
+        </div>
+        <template #footer>
+          <el-button type="primary" @click="testResultVisible = false">关闭</el-button>
+        </template>
+      </el-dialog>
+
       <div class="banner banner-info">
         <el-icon><InfoFilled /></el-icon>
+
         <div>
           <strong>配置方式</strong>
           <p>LLM 配置通过环境变量 (LLM_BASE_URL / LLM_API_KEY / LLM_MODEL / LLM_MOCK_MODE) 注入。修改配置需重启后端进程, 然后点击刷新查看新值。</p>
@@ -409,6 +519,7 @@ import {
   CircleClose,
   Close,
   Connection,
+  Tools,
   Document,
   DataLine,
   Delete,
@@ -425,7 +536,7 @@ import {
 } from '@element-plus/icons-vue'
 import { algorithmsApi, settingsApi, type Algorithm, type LLMConfig, type LLMTestResult } from '../api/client'
 
-interface AlgorithmWithMeta extends Algorithm { _toggling?: boolean }
+interface AlgorithmWithMeta extends Algorithm { _toggling?: boolean; _testing?: boolean }
 
 const PlusIcon = Plus
 const CheckIcon = Check
@@ -433,6 +544,7 @@ const RefreshIcon = Refresh
 const DocumentIcon = Document
 const ViewIcon = View
 const DeleteIcon = Delete
+const TestIcon = Tools
 const ConnectionIcon = Connection
 
 const activeTab = ref<'algorithms' | 'llm'>('algorithms')
@@ -476,10 +588,10 @@ const filters = computed(() => [
 
 // 每个引擎类型的配置字段定义 (驱动动态表单)
 interface EngineFieldDef {
-  key: string
+  key?: string
   label: string
-  type: 'text' | 'number' | 'slider' | 'textarea' | 'password' | 'select'
-  default: any
+  type: 'text' | 'number' | 'slider' | 'textarea' | 'password' | 'select' | 'switch' | 'divider'
+  default?: any
   hint?: string
   placeholder?: string
   min?: number
@@ -496,6 +608,17 @@ const ENGINE_SCHEMAS: Record<string, EngineFieldDef[]> = {
     { key: 'temperature', label: 'LLM 温度', type: 'slider', min: 0, max: 1, step: 0.1, default: 0.3, hint: '越高输出越随机' },
     { key: 'prompt', label: '系统提示词 (可选)', type: 'textarea', default: '', placeholder: '留空使用默认中文巡检 prompt', hint: '指导 LLM 输出 JSON 结构化结果的指令' },
     { key: 'user_prompt', label: '用户提示词 (可选)', type: 'textarea', default: '', placeholder: '留空使用默认' },
+    { type: 'divider', label: 'LLM 富化 (留空 = 通用基础设施巡检风格)' },
+    { key: 'enrichment_prompt', label: '富化系统提示 (可选)', type: 'textarea', default: '', placeholder: '留空使用默认 (通用巡检). 例如: 你是暖通工程师, 关注冷热源机房, 输出 P0/P1/P2 优先级建议', hint: '决定 enrichment 阶段的语气与输出格式. 不填则走默认 (生成简短 JSON 总结 + 建议)' },
+    { key: 'llm_timeout', label: '请求超时 (秒)', type: 'number', min: 30, max: 600, step: 10, default: 0, hint: '留空则按 max_output_tokens 自动推导' },
+    { type: 'divider', label: 'LLM 连接 (留空使用设置页全局默认)' },
+    { key: 'llm_base_url', label: 'API Base URL', type: 'text', default: '', placeholder: 'https://api.example.com/v1', hint: 'OpenAI 兼容接口地址' },
+    { key: 'llm_api_key', label: 'API Key', type: 'password', default: '', sensitive: true, placeholder: '留空使用全局 LLM_API_KEY', hint: '只存在本算法的 engine_config 里, 不会写入环境变量' },
+    { key: 'llm_model', label: '模型名', type: 'text', default: '', placeholder: 'MiniMax-M3 / qwen-vl-plus / gpt-4o', hint: '多模态识别需要选择可视觉模型' },
+    { key: 'max_input_tokens', label: '上下文限制 (tokens)', type: 'number', min: 256, step: 256, default: 0, hint: '留空使用全局 LLM_MAX_INPUT_TOKENS · 现代模型可支持 128K~1M+ (e.g. GPT-4 128K, Claude 200K, Gemini 1M)' },
+    { key: 'max_output_tokens', label: '输出上限 (tokens)', type: 'number', min: 64, step: 64, default: 0, hint: '留空使用全局 LLM_MAX_OUTPUT_TOKENS · 大值会自动延长超时 · 上限取决于模型 (推理模型建议 16K-64K)' },
+    { key: 'llm_timeout', label: '请求超时 (秒)', type: 'number', min: 30, max: 600, step: 10, default: 0, hint: '留空则按 max_output_tokens 自动推导 (60s + 60ms/tok, 推理模型 +30s, 上限 600s)' },
+    { key: 'llm_mock_mode', label: '本算法强制 Mock 模式', type: 'switch', default: false, hint: '开启后该算法返回预设数据, 不调真实 LLM (适合演示)' },
   ],
   cloud_api: [
     { key: 'provider', label: '厂商', type: 'select', default: 'aliyun', options: [
@@ -526,7 +649,7 @@ const ENGINE_SCHEMAS: Record<string, EngineFieldDef[]> = {
 function buildDefaultConfig(engineType: string): Record<string, any> {
   const schema = ENGINE_SCHEMAS[engineType] || []
   const cfg: Record<string, any> = {}
-  for (const f of schema) cfg[f.key] = f.default
+  for (const f of schema) if (f.key) cfg[f.key] = f.default
   return cfg
 }
 
@@ -554,6 +677,25 @@ const configDialogVisible = ref(false)
 const configLoading = ref(false)
 const selectedAlgo = ref<Algorithm | null>(null)
 
+// ====== 编辑算法配置 ======
+const editFormRef = ref()
+const editSaving = ref(false)
+const editTesting = ref(false)
+const editShowRawJson = ref(false)
+const editEngineConfigJsonStr = ref('')
+const editForm = ref({
+  code: '',
+  name: '',
+  category: '',
+  description: '',
+  engine_type: 'mock' as string,
+  is_active: true,
+  engineConfig: {} as Record<string, any>,
+})
+const editRules = {
+  name: [{ required: true, message: '请输入名称', trigger: 'blur' }],
+}
+const editSchema = computed<EngineFieldDef[]>(() => ENGINE_SCHEMAS[editForm.value.engine_type] || [])
 async function loadAlgorithms() {
   loading.value = true
   try {
@@ -602,7 +744,158 @@ async function onToggleActive(row: AlgorithmWithMeta, val: boolean) {
 
 function showConfig(row: Algorithm) {
   selectedAlgo.value = row
+  // 把当前算法数据灌进 editForm (深拷贝 engine_config)
+  editForm.value = {
+    code: row.code,
+    name: row.name,
+    category: row.category || '',
+    description: row.description || '',
+    engine_type: row.engine_type,
+    is_active: row.is_active,
+    engineConfig: JSON.parse(JSON.stringify(row.engine_config || {})),
+  }
+  editEngineConfigJsonStr.value = configToJson(editForm.value.engineConfig)
+  editShowRawJson.value = false
   configDialogVisible.value = true
+}
+
+async function onSaveEdit() {
+  if (!editFormRef.value) return
+  try {
+    await editFormRef.value.validate()
+  } catch {
+    ElMessage.error('请检查必填项')
+    return
+  }
+  if (!selectedAlgo.value) return
+  editSaving.value = true
+  try {
+    // 清理掉 engineConfig 里的空字符串 (password/select 字段用户没填时是 '')
+    const cfg: Record<string, any> = {}
+    for (const [k, v] of Object.entries(editForm.value.engineConfig)) {
+      if (v === '' || v === null || v === undefined) continue
+      cfg[k] = v
+    }
+    await algorithmsApi.update(selectedAlgo.value.code, {
+      name: editForm.value.name,
+      category: editForm.value.category || null,
+      description: editForm.value.description || null,
+      is_active: editForm.value.is_active,
+      engine_config: cfg,
+    })
+    ElMessage.success(`${selectedAlgo.value.code} 配置已更新`)
+    configDialogVisible.value = false
+    await loadAlgorithms()
+  } catch (e: any) {
+    ElMessage.error(`保存失败: ${e?.response?.data?.detail?.message || e?.message || e}`)
+  } finally {
+    editSaving.value = false
+  }
+}
+
+async function onEditTestConfig() {
+  if (!selectedAlgo.value) return
+  editTesting.value = true
+  try {
+    const cfg: Record<string, any> = {}
+    for (const [k, v] of Object.entries(editForm.value.engineConfig)) {
+      if (v === '' || v === null || v === undefined) continue
+      cfg[k] = v
+    }
+    const r: any = await algorithmsApi.test(selectedAlgo.value.code, cfg)
+    // 复用 testResult 弹窗显示
+    testResult.value = {
+      code: selectedAlgo.value.code,
+      name: editForm.value.name || selectedAlgo.value.name,
+      success: !!r.success,
+      message: r.message || '',
+      engineType: r.engine_type,
+      durationMs: r.duration_ms ?? null,
+      model: r.model ?? null,
+      promptTokens: r.prompt_tokens ?? null,
+      completionTokens: r.completion_tokens ?? null,
+      totalTokens: r.total_tokens ?? null,
+      errorCode: r.error_code ?? null,
+    }
+    testResultVisible.value = true
+  } catch (e: any) {
+    ElMessage.error(`测试请求失败: ${e?.message || e}`)
+  } finally {
+    editTesting.value = false
+  }
+}
+
+function onEditToggleJson() {
+  if (editShowRawJson.value) {
+    // 切回表单: 先把 JSON 同步回表单
+    onEditJsonBlur()
+  }
+  editShowRawJson.value = !editShowRawJson.value
+}
+
+function onCloseEdit() {
+  configDialogVisible.value = false
+}
+
+function closeEditDialog() {
+  configDialogVisible.value = false
+}
+
+function onEditJsonBlur() {
+  try {
+    const parsed = JSON.parse(editEngineConfigJsonStr.value || '{}')
+    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+      editForm.value.engineConfig = { ...editForm.value.engineConfig, ...parsed }
+    }
+  } catch (e: any) {
+    ElMessage.error(`JSON 格式错误: ${e.message}`)
+  }
+}
+
+// ====== 算法测试 ======
+const testResultVisible = ref(false)
+const testResult = ref<null | {
+  code: string
+  name: string
+  success: boolean
+  message: string
+  engineType: string
+  durationMs: number | null
+  model: string | null
+  promptTokens: number | null
+  completionTokens: number | null
+  totalTokens: number | null
+  errorCode: string | null
+}>(null)
+
+async function onTestAlgo(row: AlgorithmWithMeta) {
+  row._testing = true
+  try {
+    const r: any = await algorithmsApi.test(row.code)
+    testResult.value = {
+      code: row.code,
+      name: row.name,
+      success: !!r.success,
+      message: r.message || '',
+      engineType: r.engine_type,
+      durationMs: r.duration_ms ?? null,
+      model: r.model ?? null,
+      promptTokens: r.prompt_tokens ?? null,
+      completionTokens: r.completion_tokens ?? null,
+      totalTokens: r.total_tokens ?? null,
+      errorCode: r.error_code ?? null,
+    }
+    testResultVisible.value = true
+    if (r.success) {
+      ElMessage.success(`${row.code} 测试通过`)
+    } else {
+      ElMessage.warning(`${row.code} 测试失败: ${r.message}`)
+    }
+  } catch (e: any) {
+    ElMessage.error(`测试请求失败: ${e?.message || e}`)
+  } finally {
+    row._testing = false
+  }
 }
 
 async function onDelete(row: Algorithm) {
@@ -1360,11 +1653,58 @@ onMounted(() => {
   font-weight: 600;
   color: #0f172a;
 }
-.settings-dialog :deep(.el-dialog__body) { padding: 20px 24px; }
+.settings-dialog.el-dialog {
+  max-height: 88vh;
+  margin: 6vh auto !important;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+.settings-dialog .el-dialog__body {
+  padding: 20px 24px;
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+  overscroll-behavior: contain;
+}
+.settings-dialog .el-dialog__header,
+.settings-dialog .el-dialog__footer {
+  flex-shrink: 0;
+}
 .settings-dialog :deep(.el-dialog__footer) {
   padding: 14px 24px;
   border-top: 1px solid #eef2f6;
   margin: 0;
+}
+.algo-code-readonly {
+  font-family: ui-monospace, monospace;
+  font-size: 12.5px;
+  color: #4338ca;
+  background: #eef2ff;
+  padding: 3px 10px;
+  border-radius: 5px;
+  border: 1px solid #c7d2fe;
+}
+.edit-dialog-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  width: 100%;
+}
+.edit-dialog-footer .footer-right {
+  display: flex;
+  gap: 8px;
+}
+.section-title {
+  font-size: 12px;
+  font-weight: 600;
+  color: #64748b;
+  letter-spacing: 0.05em;
+}
+.config-json-textarea {
+  font-family: ui-monospace, monospace;
+  font-size: 12.5px;
 }
 .create-form :deep(.el-form-item__label) {
   font-weight: 500;
@@ -1396,6 +1736,9 @@ onMounted(() => {
   align-items: flex-start;
   gap: 12px;
 }
+.config-field-divider-row { padding: 12px 0 2px; border-top: 1px dashed #e2e8f0; margin-top: 14px; display: block; }
+.config-field-divider-row:first-of-type { border-top: none; margin-top: 0; }
+.config-field-divider-text { font-size: 11.5px; font-weight: 600; color: #6366f1; text-transform: uppercase; letter-spacing: 0.06em; }
 .config-field-label {
   flex: 0 0 130px;
   font-size: 13px;
@@ -1522,4 +1865,14 @@ onMounted(() => {
   .search-box { min-width: 0; }
   .filter-pills { overflow-x: auto; }
 }
+</style>
+
+<style>
+/* Dialog scroll - apply to el-dialog root which is outside Vue scope */
+.el-dialog.settings-dialog { max-height: 88vh !important; display: flex !important; flex-direction: column !important; overflow: hidden !important; margin-top: 6vh !important; margin-bottom: 6vh !important; }
+.el-dialog.settings-dialog .el-dialog__body { padding: 20px 24px !important; flex: 1 1 auto !important; min-height: 0 !important; overflow-y: auto !important; overflow-x: hidden !important; overscroll-behavior: contain !important; }
+.el-dialog.settings-dialog .el-dialog__header,
+.el-dialog.settings-dialog .el-dialog__footer { flex-shrink: 0 !important; }
+/* Make sure the dialog wrapper centers properly */
+.el-dialog.settings-dialog { width: var(--el-dialog-width, 600px); }
 </style>

@@ -97,9 +97,17 @@
         <article class="card">
           <header class="card-header">
             <div class="card-step">3</div>
-            <div>
-              <h2>上传文件</h2>
-              <p class="muted small">支持 jpg / png / mp4 · 单文件最大 20MB</p>
+            <div class="card-header-flex">
+              <div>
+                <h2>上传文件</h2>
+                <p class="muted small">支持 jpg / png / mp4 · 单文件最大 20MB</p>
+              </div>
+              <el-radio-group v-model="uploadMode" size="small" class="upload-mode">
+                <el-radio-button label="independent">独立</el-radio-button>
+                <el-radio-button label="joint">
+                  <el-icon style="margin-right: 4px; vertical-align: middle;"><Connection /></el-icon>联合
+                </el-radio-button>
+              </el-radio-group>
             </div>
           </header>
           <div
@@ -111,28 +119,63 @@
             <el-upload
               v-if="fileList.length === 0"
               :auto-upload="false"
-              :limit="1"
+              :multiple="true"
+              :limit="20"
               :show-file-list="false"
               :on-change="onFileChange"
+              :on-exceed="onExceed"
               drag
               class="drop-inner"
             >
               <el-icon class="drop-icon"><UploadFilled /></el-icon>
-              <div class="drop-text">点击或拖拽文件到这里</div>
-              <div class="drop-hint">支持 jpg / png / mp4 · 最大 20MB</div>
+              <div class="drop-text">点击或拖拽一个或多个文件到这里</div>
+              <div v-if="uploadMode === 'joint'" class="drop-hint">联合分析 · 一次上传多张图, AI 交叉对比 · 单文件最大 20MB · 最多 20 个</div>
+            <div v-else class="drop-hint">独立识别 · 每张图生成一条记录 · 单文件最大 20MB</div>
             </el-upload>
-            <div v-else class="file-preview">
-              <div class="file-thumb">
-                <el-icon v-if="!previewUrl" class="file-icon"><Document /></el-icon>
-                <img v-else-if="isImage" :src="previewUrl" alt="preview" />
-                <video v-else-if="isVideo" :src="previewUrl" controls />
-                <el-icon v-else class="file-icon"><VideoPlay /></el-icon>
+            <div v-else class="file-list">
+              <div class="file-list-head">
+                <span class="file-list-title">已选择 {{ fileList.length }} 个文件 · 共 {{ formatSize(totalSize) }}</span>
+                <div class="file-list-actions">
+                  <el-upload
+                    :auto-upload="false"
+                    :multiple="true"
+                    :limit="20 - fileList.length"
+                    :show-file-list="false"
+                    :on-change="onFileChange"
+                    :on-exceed="onExceed"
+                    class="add-more-upload"
+                  >
+                    <el-button :icon="PlusIcon" size="small" text>继续添加</el-button>
+                  </el-upload>
+                  <el-button :icon="DeleteIcon" size="small" text type="danger" @click="removeAllFiles">全部清空</el-button>
+                </div>
               </div>
-              <div class="file-info">
-                <strong>{{ fileList[0].name }}</strong>
-                <div class="muted small">{{ formatSize(fileList[0].size || 0) }} · {{ fileList[0].raw?.type || '未知类型' }}</div>
-                <el-button :icon="DeleteIcon" text type="danger" size="small" @click="removeFile">移除</el-button>
-              </div>
+              <ul class="file-items">
+                <li v-for="(f, idx) in fileList" :key="f.uid || idx" class="file-item">
+                  <div class="file-item-thumb">
+                    <el-icon v-if="!isImageOf(f) && !isVideoOf(f)" class="file-icon"><Document /></el-icon>
+                    <img v-else-if="isImageOf(f) && f.previewUrl" :src="f.previewUrl" alt="preview" />
+                    <video v-else-if="isVideoOf(f) && f.previewUrl" :src="f.previewUrl" muted />
+                    <el-icon v-else class="file-icon"><VideoPlay /></el-icon>
+                    <span v-if="f._status === 'uploading'" class="file-item-badge uploading">上传中</span>
+                    <span v-else-if="f._status === 'success'" class="file-item-badge success">✓ #{{ f._recordId }}</span>
+                    <span v-else-if="f._status === 'failed'" class="file-item-badge failed" :title="f._error">失败</span>
+                  </div>
+                  <div class="file-item-info">
+                    <strong>{{ f.name }}</strong>
+                    <div class="muted small">{{ formatSize(f.size || 0) }} · {{ f.raw?.type || '未知类型' }}</div>
+                    <div v-if="f._status === 'failed'" class="file-item-error">{{ f._error }}</div>
+                  </div>
+                  <el-button
+                    :icon="DeleteIcon"
+                    text
+                    type="danger"
+                    size="small"
+                    :disabled="f._status === 'uploading'"
+                    @click="removeFile(idx)"
+                  >移除</el-button>
+                </li>
+              </ul>
             </div>
           </div>
         </article>
@@ -146,8 +189,14 @@
             </div>
             <div class="summary-row">
               <span class="muted">文件</span>
-              <span v-if="fileList[0]">{{ fileList[0].name }}</span>
-              <span v-else class="muted">未上传</span>
+              <span v-if="fileList.length === 0" class="muted">未上传</span>
+              <span v-else>{{ fileList.length }} 个 · {{ formatSize(totalSize) }}</span>
+            </div>
+            <div v-if="batchResults.length > 0" class="summary-row">
+              <span class="muted">本批</span>
+              <span>
+                <el-tag v-if="batchResults.length > 0" type="success" size="small">{{ batchResults.length }} 条记录</el-tag>
+              </span>
             </div>
           </div>
           <el-button
@@ -171,7 +220,7 @@ import { useRouter } from 'vue-router'
 import { useRecordsStore } from '../stores/records'
 import { ElMessage, type UploadFile, type UploadRawFile } from 'element-plus'
 import {
-  Check, CircleCheckFilled, DataLine, Delete, Document, Loading, Location,
+  Check, CircleCheckFilled, Connection, DataLine, Delete, Document, Loading, Location,
   Plus, Promotion, Refresh, UploadFilled, User, VideoPlay, WarningFilled,
 } from '@element-plus/icons-vue'
 
@@ -185,17 +234,25 @@ const store = useRecordsStore()
 const router = useRouter()
 
 const form = reactive({ algorithmCode: '', assetId: '', inspectorId: '' })
-const fileList = ref<UploadFile[]>([])
+const uploadMode = ref<'independent' | 'joint'>('joint')  // 默认联合分析
+interface QueuedFile extends UploadFile {
+  previewUrl?: string | null
+  _status?: 'pending' | 'uploading' | 'success' | 'failed'
+  _recordId?: number
+  _error?: string
+}
+const fileList = ref<QueuedFile[]>([])
 const uploading = ref(false)
 const lastResult = ref<{ record_id: number; status: string; status_url: string } | null>(null)
+const batchResults = ref<{ record_id: number; status: string; file: string }[]>([])
 const loadingAlgos = ref(false)
 const isDragover = ref(false)
-const previewUrl = ref<string | null>(null)
 
 const algorithms = computed(() => store.algorithms)
-const canSubmit = computed(() => !!form.algorithmCode && fileList.value.length > 0 && !!fileList.value[0]?.raw)
-const isImage = computed(() => (fileList.value[0]?.raw?.type || '').startsWith('image/'))
-const isVideo = computed(() => (fileList.value[0]?.raw?.type || '').startsWith('video/'))
+const canSubmit = computed(() => !!form.algorithmCode && fileList.value.length > 0 && fileList.value.some((f) => !!f.raw))
+const totalSize = computed(() => fileList.value.reduce((acc, f) => acc + (f.size || 0), 0))
+function isImageOf(f: QueuedFile): boolean { return (f.raw?.type || '').startsWith('image/') }
+function isVideoOf(f: QueuedFile): boolean { return (f.raw?.type || '').startsWith('video/') }
 
 function engineTypeLabel(t: string): string {
   const m: Record<string, string> = { cloud_api: '云 API', mock: 'Mock', hikvision_brain: '海康超脑', local_model: '本地模型', multimodal_llm: '多模态 LLM' }
@@ -214,36 +271,125 @@ onMounted(() => {
   if (store.algorithms.length === 0) loadAlgorithms()
   if (!form.inspectorId) form.inspectorId = localStorage.getItem('inspector_id') || 'WEB-DEMO-USER'
 })
-function onFileChange(f: UploadFile) { fileList.value = [f]; setPreview(f) }
+function setPreview(f: QueuedFile): QueuedFile {
+  if (f.previewUrl) URL.revokeObjectURL(f.previewUrl)
+  f.previewUrl = f.raw ? URL.createObjectURL(f.raw) : null
+  return f
+}
+function wrapRaw(f: File): QueuedFile {
+  const wrapped: any = { name: f.name, size: f.size, type: f.type, raw: f, _status: 'pending' }
+  return setPreview(wrapped)
+}
+function onFileChange(f: UploadFile | UploadFile[]) {
+  const incoming = Array.isArray(f) ? f : [f]
+  const wrapped = incoming
+    .map((it) => (it.raw ? wrapRaw(it.raw) : null))
+    .filter((x): x is QueuedFile => !!x)
+  fileList.value = [...fileList.value, ...wrapped]
+}
+function onExceed() {
+  ElMessage.warning(`单次最多 20 个文件, 已达上限`)
+}
 function onDrop(e: DragEvent) {
   isDragover.value = false
-  const f = e.dataTransfer?.files?.[0]
+  const files = Array.from(e.dataTransfer?.files || [])
+  if (files.length === 0) return
+  const wrapped = files.map(wrapRaw)
+  fileList.value = [...fileList.value, ...wrapped]
+}
+function removeFile(idx: number) {
+  const f = fileList.value[idx]
   if (!f) return
-  const wrapped: any = { name: f.name, size: f.size, type: f.type, raw: f as UploadRawFile }
-  fileList.value = [wrapped as UploadFile]; setPreview(wrapped)
+  if (f.previewUrl) URL.revokeObjectURL(f.previewUrl)
+  fileList.value.splice(idx, 1)
 }
-function setPreview(f: any) {
-  if (previewUrl.value) URL.revokeObjectURL(previewUrl.value)
-  previewUrl.value = f.raw ? URL.createObjectURL(f.raw) : null
+function removeAllFiles() {
+  fileList.value.forEach((f) => { if (f.previewUrl) URL.revokeObjectURL(f.previewUrl) })
+  fileList.value = []
 }
-function removeFile() {
-  if (previewUrl.value) URL.revokeObjectURL(previewUrl.value)
-  previewUrl.value = null; fileList.value = []
-}
-function onReset() { form.algorithmCode = ''; form.assetId = ''; removeFile(); lastResult.value = null }
+function onReset() { form.algorithmCode = ''; form.assetId = ''; removeAllFiles(); lastResult.value = null; batchResults.value = [] }
 async function onSubmit() {
   if (!form.algorithmCode) return ElMessage.warning('请选择算法')
-  if (!fileList.value[0]?.raw) return ElMessage.warning('请选择文件')
+  const pending = fileList.value.filter((f) => !!f.raw && f._status !== 'success')
+  if (pending.length === 0) return ElMessage.warning('请选择文件')
+  if (pending.length > 1 && uploadMode.value === 'independent') {
+    ElMessage.warning('独立模式下请单次提交 1 个文件 (多文件请切换到联合模式)')
+    return
+  }
+  if (form.inspectorId) localStorage.setItem('inspector_id', form.inspectorId)
   uploading.value = true
-  try {
-    if (form.inspectorId) localStorage.setItem('inspector_id', form.inspectorId)
-    const meta: Record<string, any> = {}
-    if (form.assetId) meta.asset_id = form.assetId
-    if (form.inspectorId) meta.inspector_id_hint = form.inspectorId
-    const r = await store.uploadFile(form.algorithmCode, fileList.value[0].raw, meta)
-    ElMessage.success('上传成功 · 记录 #' + r.record_id)
-    lastResult.value = r
-  } catch { /* handled */ } finally { uploading.value = false }
+  batchResults.value = []
+  let successCount = 0
+  let failCount = 0
+  // 联合分析模式 + 多文件: 一次调用 batch 端点, 一条记录
+  if (uploadMode.value === 'joint' && pending.length > 1) {
+    const firstFile = pending[0]
+    firstFile._status = 'uploading'
+    firstFile._error = undefined
+    try {
+      const meta: Record<string, any> = {
+        filename: firstFile.name,
+        is_batch: true,
+      }
+      if (form.assetId) meta.asset_id = form.assetId
+      if (form.inspectorId) meta.inspector_id_hint = form.inspectorId
+      const files = pending.map((f) => f.raw as File)
+      const r: any = await store.uploadBatch(form.algorithmCode, files, meta)
+      firstFile._status = 'success'
+      firstFile._recordId = r.record_id
+      // 其余文件标记为已合入批次
+      for (let i = 1; i < pending.length; i++) {
+        pending[i]._status = 'success'
+        pending[i]._recordId = r.record_id
+      }
+      batchResults.value.push({ record_id: r.record_id, status: r.status, file: `${pending.length} 个文件 (联合分析)` })
+      successCount = pending.length
+      ElMessage.success(`联合分析已提交 · 记录 #${r.record_id} · 包含 ${pending.length} 个文件`)
+    } catch (e: any) {
+      firstFile._status = 'failed'
+      firstFile._error = e?.response?.data?.detail?.message || e?.message || '上传失败'
+      // 联合分析失败时, 回退到独立模式逐个上传
+      ElMessage.warning('联合分析失败, 自动回退为独立模式逐个上传')
+      uploading.value = false
+      return onSubmitIndependent(pending)
+    }
+    uploading.value = false
+    return
+  }
+  // 独立模式 或 单文件: 逐个上传
+  return onSubmitIndependent(pending)
+}
+
+async function onSubmitIndependent(pending: QueuedFile[]) {
+  uploading.value = true
+  let successCount = 0
+  let failCount = 0
+  for (const f of pending) {
+    f._status = 'uploading'
+    f._error = undefined
+    try {
+      const meta: Record<string, any> = { filename: f.name }
+      if (form.assetId) meta.asset_id = form.assetId
+      if (form.inspectorId) meta.inspector_id_hint = form.inspectorId
+      const r = await store.uploadFile(form.algorithmCode, f.raw as File, meta)
+      f._status = 'success'
+      f._recordId = r.record_id
+      batchResults.value.push({ record_id: r.record_id, status: r.status, file: f.name })
+      successCount++
+    } catch (e: any) {
+      f._status = 'failed'
+      f._error = e?.response?.data?.detail?.message || e?.message || '上传失败'
+      failCount++
+    }
+  }
+  uploading.value = false
+  if (successCount > 0 && failCount === 0) {
+    ElMessage.success(`全部 ${successCount} 个文件上传成功`)
+  } else if (successCount > 0 && failCount > 0) {
+    ElMessage.warning(`${successCount} 成功, ${failCount} 失败`)
+  } else if (failCount > 0) {
+    ElMessage.error(`全部 ${failCount} 个文件上传失败`)
+  }
 }
 function goDashboard() { router.push('/') }
 </script>
@@ -266,6 +412,7 @@ function goDashboard() { router.push('/') }
 .card { background: #fff; border: 1px solid #eef2f6; border-radius: 14px; padding: 20px 22px; box-shadow: 0 1px 2px rgba(15, 23, 42, 0.04); }
 .card-header { display: flex; align-items: center; gap: 12px; margin-bottom: 16px; padding-bottom: 14px; border-bottom: 1px solid #f1f5f9; }
 .card-step { width: 28px; height: 28px; border-radius: 8px; background: linear-gradient(135deg, #6366f1, #4338ca); color: #fff; font-size: 13px; font-weight: 700; display: grid; place-items: center; flex-shrink: 0; }
+.card-header-flex { display: flex; align-items: center; justify-content: space-between; gap: 16px; flex: 1; }
 .card-header h2 { margin: 0 0 2px; font-size: 15px; font-weight: 600; color: #0f172a; }
 .card-header p { margin: 0; }
 .algo-loading, .algo-empty { display: flex; align-items: center; justify-content: center; gap: 8px; padding: 40px 0; color: #94a3b8; font-size: 13.5px; }
@@ -309,6 +456,25 @@ function goDashboard() { router.push('/') }
 .drop-icon { font-size: 38px; color: #94a3b8; }
 .drop-text { font-size: 14px; color: #475569; font-weight: 500; }
 .drop-hint { font-size: 12px; color: #94a3b8; }
+.file-list { width: 100%; display: flex; flex-direction: column; }
+.file-list-head { display: flex; align-items: center; justify-content: space-between; padding: 12px 14px; border-bottom: 1px solid #eef2f6; background: #f8fafc; }
+.file-list-title { font-size: 12.5px; font-weight: 500; color: #475569; }
+.file-list-actions { display: flex; gap: 4px; }
+.add-more-upload :deep(.el-upload) { display: inline-block; }
+.file-items { list-style: none; padding: 8px; margin: 0; max-height: 320px; overflow-y: auto; }
+.file-item { display: flex; align-items: center; gap: 12px; padding: 8px 10px; border-radius: 8px; transition: background 0.12s ease; }
+.file-item:hover { background: #f8fafc; }
+.file-item-thumb { width: 48px; height: 48px; border-radius: 8px; background: #f1f5f9; display: grid; place-items: center; overflow: hidden; flex-shrink: 0; position: relative; border: 1px solid #e2e8f0; }
+.file-item-thumb img, .file-item-thumb video { width: 100%; height: 100%; object-fit: cover; }
+.file-item-thumb .file-icon { font-size: 22px; color: #94a3b8; }
+.file-item-badge { position: absolute; bottom: -4px; right: -4px; font-size: 9px; font-weight: 700; padding: 2px 5px; border-radius: 6px; box-shadow: 0 1px 2px rgba(15, 23, 42, 0.15); }
+.file-item-badge.uploading { background: #fef3c7; color: #92400e; }
+.file-item-badge.success { background: #dcfce7; color: #166534; }
+.file-item-badge.failed { background: #fee2e2; color: #991b1b; }
+.file-item-info { flex: 1; min-width: 0; }
+.file-item-info strong { display: block; font-size: 13px; color: #0f172a; font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.file-item-error { font-size: 11.5px; color: #b91c1c; margin-top: 2px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.file-item-uploading { color: #d97706; font-size: 11.5px; margin-top: 2px; }
 .file-preview { display: flex; align-items: center; gap: 16px; padding: 16px; width: 100%; background: #fff; }
 .file-thumb { width: 96px; height: 96px; border-radius: 10px; background: #f1f5f9; display: grid; place-items: center; overflow: hidden; flex-shrink: 0; }
 .file-thumb img, .file-thumb video { width: 100%; height: 100%; object-fit: cover; }

@@ -43,5 +43,9 @@ export const useRecordsStore = defineStore('records', () => {
     return await recordsApi.upload(code, file, meta)
   }
 
-  return { records, algorithms, loading, total, stats, statsLoading, fetchRecords, fetchStats, fetchAlgorithms, fetchRecord, uploadFile }
+  async function uploadBatch(code: string, files: File[], meta: Record<string, any> = {}) {
+    return await recordsApi.uploadBatch(code, files, meta)
+  }
+
+  return { records, algorithms, loading, total, stats, statsLoading, fetchRecords, fetchStats, fetchAlgorithms, fetchRecord, uploadFile, uploadBatch }
 })

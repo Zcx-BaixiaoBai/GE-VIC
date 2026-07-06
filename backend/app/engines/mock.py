@@ -93,5 +93,19 @@ class MockEngine(BaseEngine):
             duration_ms=int((time.monotonic() - start) * 1000),
         )
 
-    async def health_check(self, config: dict[str, Any]) -> bool:
-        return True
+    async def health_check(self, config: dict[str, Any]) -> dict[str, Any]:
+        """Mock 引擎: 验证 config 字段类型, 不发起网络调用"""
+        errors = []
+        if "delay_ms" in config:
+            v = config["delay_ms"]
+            if not isinstance(v, (int, float)) or v < 0:
+                errors.append("delay_ms 必须是 >= 0 的数字")
+        if "defects_count" in config:
+            v = config["defects_count"]
+            if not isinstance(v, int) or v < 0 or v > 10:
+                errors.append("defects_count 必须是 0-10 的整数")
+        if "simulate_failure" in config and not isinstance(config["simulate_failure"], bool):
+            errors.append("simulate_failure 必须是 bool")
+        if errors:
+            return {"ok": False, "message": "; ".join(errors), "error_code": "BAD_CONFIG"}
+        return {"ok": True, "message": "Mock 引擎配置有效 (未发起任何调用)", "duration_ms": 0}

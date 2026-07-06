@@ -44,6 +44,11 @@ class InspectionOut(BaseModel):
         None, description="{code, message}"
     )
 
+    # 批次/联合分析
+    is_batch: bool = False
+    batch_size: int = 0
+    batch_files: list[dict[str, Any]] | None = None
+
 
 class InspectionListOut(BaseModel):
     """记录列表响应"""

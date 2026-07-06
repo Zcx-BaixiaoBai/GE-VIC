@@ -126,6 +126,70 @@ async def update_algorithm(
     return AlgorithmOut(**to_dict(algo))
 
 
+class AlgorithmTestIn(BaseModel):
+    """测试请求体 (可选: 用临时 engine_config 测试未保存的配置)"""
+    engine_config: dict[str, Any] | None = None
+
+
+class AlgorithmTestOut(BaseModel):
+    """算法测试结果"""
+    success: bool
+    message: str
+    engine_type: str
+    duration_ms: int | None = None
+    model: str | None = None
+    prompt_tokens: int | None = None
+    completion_tokens: int | None = None
+    total_tokens: int | None = None
+    error_code: str | None = None
+    detail: dict[str, Any] | None = None
+
+
+@router.post("/{code}/test", response_model=AlgorithmTestOut)
+async def test_algorithm(
+    code: str,
+    body: AlgorithmTestIn | None = None,
+    session: AsyncSession = Depends(get_session),
+    _: str = Depends(get_inspector_id),
+) -> AlgorithmTestOut:
+    """测试算法连通性"""
+    import time
+    result = await session.execute(select(Algorithm).where(Algorithm.code == code))
+    algo = result.scalar_one_or_none()
+    if algo is None:
+        raise HTTPException(
+            status_code=404,
+            detail={"code": "ALGORITHM_NOT_FOUND", "message": f"Algorithm {code} not found"},
+        )
+    cfg = (body.engine_config if body and body.engine_config is not None else algo.engine_config) or {}
+    from app.engines.factory import get_engine
+    engine = get_engine(algo.engine_type)
+    start = time.monotonic()
+    try:
+        hc = await engine.health_check(cfg)
+    except Exception as e:
+        return AlgorithmTestOut(
+            success=False,
+            message=f"health_check 抛异常: {e}",
+            engine_type=algo.engine_type,
+            error_code="HEALTH_CHECK_EXCEPTION",
+            duration_ms=int((time.monotonic() - start) * 1000),
+        )
+    duration = int((time.monotonic() - start) * 1000)
+    return AlgorithmTestOut(
+        success=bool(hc.get("ok")),
+        message=hc.get("message", ""),
+        engine_type=algo.engine_type,
+        duration_ms=hc.get("duration_ms", duration),
+        model=hc.get("model"),
+        prompt_tokens=hc.get("prompt_tokens"),
+        completion_tokens=hc.get("completion_tokens"),
+        total_tokens=hc.get("total_tokens"),
+        error_code=hc.get("error_code"),
+        detail=hc,
+    )
+
+
 @router.delete("/{code}", status_code=204)
 async def delete_algorithm(
     code: str,

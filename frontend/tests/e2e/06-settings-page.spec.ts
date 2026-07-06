@@ -60,3 +60,47 @@ test('UI: open algorithm create dialog', async ({ page }) => {
   await expect(page.getByLabel('Code', { exact: true })).toBeVisible()
   await expect(page.getByLabel('名称', { exact: true })).toBeVisible()
 })
+
+
+test('UI: click 算法测试按钮 opens result dialog with engine info', async ({ page }) => {
+  await page.goto('/settings')
+  await page.waitForSelector('.algo-card', { timeout: 10000 })
+  const card = page.locator('.algo-card').filter({ hasText: 'multimodal-inspector' }).first()
+  await card.locator('button:has-text("测试")').click()
+  // Wait for the dialog title to be attached to DOM (visible or not)
+  await page.locator('.el-dialog__title:has-text("算法测试结果")').waitFor({ state: 'attached', timeout: 30000 })
+  // Wait for the result content to be attached (LLM call takes ~5s)
+  await page.locator('.algo-test-result .algo-test-message').waitFor({ state: 'attached', timeout: 30000 })
+  // Should contain "LLM 调用成功" or "LLM 调用失败"
+  await expect(page.locator('.algo-test-result .algo-test-message')).toContainText(/LLM 调用/, { timeout: 10000 })
+  // The engine info should show multimodal_llm
+  await expect(page.locator('.algo-test-meta dd').first()).toContainText('multimodal_llm')
+})
+
+
+test('UI: edit dialog can modify algorithm config and save', async ({ page, request }) => {
+  await page.goto('/settings')
+  await page.waitForSelector('.algo-card', { timeout: 10000 })
+  // Open edit dialog for the first card
+  await page.locator('.algo-card button:has-text("查看配置")').first().click()
+  // Wait for dialog with form
+  await page.locator('.el-dialog__title:has-text("编辑算法")').waitFor({ state: 'attached', timeout: 10000 })
+  // Should have name input
+  const nameInput = page.locator('.el-dialog input[placeholder*="算法显示名称"]')
+  await nameInput.waitFor({ state: 'attached', timeout: 10000 })
+  // Should have the engine type badge displayed (read-only engine)
+  await expect(page.locator('.el-dialog .engine-badge').first()).toBeVisible()
+  // Should have engine config form fields
+  const configRows = page.locator('.el-dialog .config-field-row')
+  expect(await configRows.count()).toBeGreaterThan(0)
+  // Cancel (don't actually save to avoid affecting other tests)
+  await page.locator('.el-dialog button:has-text("取消")').click()
+  // Wait for dialog to be hidden (not removed from DOM)
+  await page.locator('.el-dialog.settings-dialog').waitFor({ state: 'hidden', timeout: 10000 })
+  // Verify the actual dialog state - overlay should be display: none
+  const overlayState = await page.evaluate(() => {
+    const overlays = document.querySelectorAll('.el-overlay');
+    return Array.from(overlays).every(o => o.style.display === 'none' || o.querySelector('.el-dialog__title')?.textContent?.includes('算法测试') === false);
+  });
+  expect(overlayState).toBe(true);
+})

@@ -39,11 +39,26 @@ class CloudVisionEngine(BaseEngine):
         except Exception:
             return False
 
-    async def health_check(self, config: dict[str, Any]) -> bool:
+    async def health_check(self, config: dict[str, Any]) -> dict[str, Any]:
+        import time
         endpoint = config.get("endpoint", "")
         if not endpoint:
-            return False
-        return await self._ping(endpoint)
+            return {"ok": False, "message": "endpoint 未配置", "error_code": "MISSING_ENDPOINT"}
+        start = time.monotonic()
+        try:
+            ok = await self._ping(endpoint)
+            return {
+                "ok": ok,
+                "message": "endpoint 可达" if ok else "endpoint 不可达 (5xx 或网络错误)",
+                "duration_ms": int((time.monotonic() - start) * 1000),
+            }
+        except Exception as e:
+            return {
+                "ok": False,
+                "message": f"endpoint 探测异常: {e}",
+                "error_code": "ENDPOINT_PROBE_ERROR",
+                "duration_ms": int((time.monotonic() - start) * 1000),
+            }
 
     async def _call_api(
         self,

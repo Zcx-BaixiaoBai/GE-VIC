@@ -34,9 +34,9 @@ test('UI: upload to multimodal algorithm runs successfully', async ({ page }) =>
   // submit
   await page.locator('.submit-btn').click()
 
-  // wait for result banner
-  await page.waitForSelector('.result-banner', { timeout: 30000 })
-  await expect(page.locator('.result-banner strong')).toContainText('提交成功')
+  // wait for the per-file success badge
+  await page.waitForSelector('.file-item-badge.success', { state: 'visible', timeout: 60000 })
+  await expect(page.locator('.file-item-badge.success').first()).toBeVisible()
 })
 
 test('API: multimodal algorithm listed in /algorithms', async ({ request }) => {
@@ -83,8 +83,8 @@ test('UI: create dialog uses dynamic form fields per engine type', async ({ page
   await select.click()
   await page.getByRole('option', { name: /多模态 LLM/ }).click()
   await page.waitForTimeout(400)
-  // 5 fields
-  await expect(page.locator('.config-field-row')).toHaveCount(5)
+  // 5 original + 2 dividers + 8 LLM fields + 1 LLM 连接 divider = 16
+  await expect(page.locator('.config-field-row')).toHaveCount(16)
 
   // switch to cloud_api
   await select.click()
@@ -168,4 +168,136 @@ test('UI: newly created algorithm appears in upload page without restart', async
   await page.waitForSelector('.algo-pick', { timeout: 10000 })
   const afterCards = await page.locator('.algo-pick:has(.algo-pick-code:text("' + code + '"))').count()
   expect(afterCards).toBe(0)
+})
+
+
+test('API: test algorithm endpoint returns connectivity result', async ({ request }) => {
+  const r = await request.post('http://127.0.0.1:8000/api/v1/admin/algorithms/multimodal-inspector/test', {
+    headers: { 'X-Inspector-Id': 'dev' },
+    data: {},
+  })
+  expect(r.status()).toBe(200)
+  const body = await r.json()
+  expect(body).toHaveProperty('success')
+  expect(body).toHaveProperty('message')
+  expect(body).toHaveProperty('engine_type')
+  expect(body.engine_type).toBe('multimodal_llm')
+  // 真实 LLM 调用, 应该有 model 和 token 字段
+  expect(body).toHaveProperty('model')
+  expect(body).toHaveProperty('duration_ms')
+})
+
+
+test('API: test algorithm with bad engine_config returns failure', async ({ request }) => {
+  const r = await request.post('http://127.0.0.1:8000/api/v1/admin/algorithms/multimodal-inspector/test', {
+    headers: { 'X-Inspector-Id': 'dev' },
+    data: {
+      engine_config: {
+        llm_base_url: 'https://nonexistent.invalid/v1',
+        llm_api_key: 'sk-bogus',
+        llm_model: 'no-such-model',
+      },
+    },
+  })
+  expect(r.status()).toBe(200)
+  const body = await r.json()
+  expect(body.success).toBe(false)
+  expect(body.error_code).toBeTruthy()
+  expect(body.message).toContain('LLM')
+})
+
+
+test('API: test mock algorithm returns success without real call', async ({ request }) => {
+  const r = await request.post('http://127.0.0.1:8000/api/v1/admin/algorithms/insulator-demo/test', {
+    headers: { 'X-Inspector-Id': 'dev' },
+    data: {},
+  })
+  expect(r.status()).toBe(200)
+  const body = await r.json()
+  expect(body.success).toBe(true)
+  expect(body.engine_type).toBe('mock')
+})
+
+
+test('UI: upload page supports selecting multiple files', async ({ page }) => {
+  await page.goto('/upload')
+  await page.waitForSelector('.algo-pick', { timeout: 10000 })
+  // Pick multimodal-inspector algorithm
+  await page.locator('.algo-pick').filter({ hasText: 'multimodal-inspector' }).first().click()
+  // Set 3 files
+  const fileInput = page.locator('input[type="file"]').first()
+  await fileInput.setInputFiles([
+    'C:/Users/Admin/Documents/GE-VIC/test-image.jpg',
+    'C:/Users/Admin/Documents/GE-VIC/test-image.jpg',
+    'C:/Users/Admin/Documents/GE-VIC/test-image.jpg',
+  ])
+  await page.waitForTimeout(500)
+  // 3 file items in the list
+  await expect(page.locator('.file-item')).toHaveCount(3)
+  // Summary shows count
+  await expect(page.locator('.file-list-title')).toContainText('3 个文件')
+  // Remove first one
+  await page.locator('.file-item button:has-text("移除")').first().click()
+  await page.waitForTimeout(300)
+  await expect(page.locator('.file-item')).toHaveCount(2)
+  // Clear all
+  await page.locator('button:has-text("全部清空")').click()
+  await page.waitForTimeout(300)
+  await expect(page.locator('.file-item')).toHaveCount(0)
+})
+
+
+test('UI: batch upload with joint analysis creates single record', async ({ page, request }) => {
+  await page.goto('/upload')
+  await page.waitForSelector('.algo-pick', { timeout: 10000 })
+  // Pick multimodal-inspector
+  await page.locator('.algo-pick').filter({ hasText: 'multimodal-inspector' }).first().click()
+  // Default mode is 'joint' (联合分析)
+  const modeCount = await page.locator('.upload-mode').count()
+  expect(modeCount).toBeGreaterThan(0)
+  // Set 3 files
+  const fileInput = page.locator('input[type="file"]').first()
+  await fileInput.setInputFiles([
+    'C:/Users/Admin/Documents/GE-VIC/test-image.jpg',
+    'C:/Users/Admin/Documents/GE-VIC/test-image.jpg',
+    'C:/Users/Admin/Documents/GE-VIC/test-image.jpg',
+  ])
+  await page.waitForTimeout(500)
+  await expect(page.locator('.file-item')).toHaveCount(3)
+  // Submit
+  await page.locator('.submit-btn').click()
+  // Wait for success badge (LLM call takes ~5s, allow 60s)
+  await page.locator('.file-item-badge.success').first().waitFor({ state: 'visible', timeout: 60000 })
+  // Verify via API that the record is a batch
+  const r = await request.get('http://127.0.0.1:8000/api/v1/records?limit=1', { headers: { 'X-Inspector-Id': 'dev' } })
+  const j = await r.json()
+  const latest = j.items[0]
+  expect(latest.is_batch).toBe(true)
+  expect(latest.batch_size).toBe(3)
+  expect(latest.batch_files).toHaveLength(3)
+})
+
+
+test('UI: max_input_tokens and max_output_tokens accept large values without clamping', async ({ page }) => {
+  await page.goto('/settings')
+  await page.waitForSelector('.algo-card', { timeout: 10000 })
+  // Open edit dialog for minimax-test
+  await page.locator('.algo-card').filter({ hasText: 'minimax-test' }).first().locator('button:has-text("查看配置")').click()
+  await page.waitForTimeout(800)
+  // Scroll to LLM connection section to find max_input_tokens
+  await page.locator('.el-dialog__body').evaluate(el => el.scrollTop = el.scrollHeight)
+  await page.waitForTimeout(300)
+  // Find the input for max_input_tokens and max_output_tokens by their values
+  // (they were set to 800000 and 64000 by a previous test run)
+  const allInputs = await page.locator('.el-dialog .el-input-number input').all()
+  // The values should include 800000 and 64000 (not clamped)
+  let found800k = false
+  let found64k = false
+  for (const input of allInputs) {
+    const v = await input.inputValue()
+    if (v === '800000') found800k = true
+    if (v === '64000') found64k = true
+  }
+  expect(found800k).toBe(true)
+  expect(found64k).toBe(true)
 })

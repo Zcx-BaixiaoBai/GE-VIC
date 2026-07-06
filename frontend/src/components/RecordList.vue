@@ -6,7 +6,14 @@
         <StatusTag :status="row.status" :enrichment-status="row.enrichment_status" />
       </template>
     </el-table-column>
-    <el-table-column prop="algorithm_code" label="算法" width="180" />
+    <el-table-column label="算法" width="220">
+      <template #default="{ row }">
+        <div class="algo-cell-group">
+          <code class="algo-cell">{{ row.algorithm_code }}</code>
+          <EngineBadge :type="engineTypeOf(row.algorithm_code)" />
+        </div>
+      </template>
+    </el-table-column>
     <el-table-column prop="category" label="类别" width="100" />
     <el-table-column prop="asset_id" label="资产" width="140">
       <template #default="{ row }">{{ row.asset_id || row.request_meta?.asset_id || '-' }}</template>
@@ -39,13 +46,16 @@
 </template>
 
 <script setup lang="ts">
+import { computed } from 'vue'
 import StatusTag from './StatusTag.vue'
-import type { Inspection } from '../api/client'
+import EngineBadge from './EngineBadge.vue'
+import type { Inspection, Algorithm } from '../api/client'
 
-defineProps<{
+const props = defineProps<{
   records: Inspection[]
   loading?: boolean
   total?: number
+  algorithms?: Algorithm[]
 }>()
 
 defineEmits<{
@@ -53,4 +63,14 @@ defineEmits<{
   (e: 'retry', r: Inspection): void
   (e: 'refresh'): void
 }>()
+
+function engineTypeOf(code: string): string {
+  const a = (props.algorithms || []).find((x) => x.code === code)
+  return a ? a.engine_type : ''
+}
 </script>
+
+<style scoped>
+.algo-cell-group { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.algo-cell { font-family: ui-monospace, monospace; font-size: 12px; color: #4338ca; background: #eef2ff; padding: 1px 6px; border-radius: 5px; }
+</style>

@@ -125,6 +125,21 @@ export const algorithmsApi = {
   update: (code: string, body: Partial<Algorithm>) =>
     api.patch<Algorithm>(`/admin/algorithms/${code}`, body).then((r) => r.data),
   remove: (code: string) => api.delete(`/admin/algorithms/${code}`).then((r) => r.data),
+  test: (code: string, engineConfig?: Record<string, any>) =>
+    api.post<AlgorithmTestResult>(`/admin/algorithms/${code}/test`, { engine_config: engineConfig }).then((r) => r.data),
+}
+
+export interface AlgorithmTestResult {
+  success: boolean
+  message: string
+  engine_type: string
+  duration_ms: number | null
+  model: string | null
+  prompt_tokens: number | null
+  completion_tokens: number | null
+  total_tokens: number | null
+  error_code: string | null
+  detail?: Record<string, any> | null
 }
 
 export const settingsApi = {
@@ -145,6 +160,17 @@ export const recordsApi = {
     return api
       .post<{ record_id: number; status: string; status_url: string }>(`/inspect/${code}`, fd, {
         headers: { 'Content-Type': 'multipart/form-data' },
+      })
+      .then((r) => r.data)
+  },
+  uploadBatch: (code: string, files: File[], meta: Record<string, any> = {}) => {
+    const fd = new FormData()
+    for (const f of files) fd.append('files', f)
+    fd.append('meta', JSON.stringify(meta))
+    return api
+      .post<{ record_id: number; status: string; status_url: string }>(`/inspect/${code}/batch`, fd, {
+        headers: { 'Content-Type': 'multipart/form-data' },
+        timeout: 120000,
       })
       .then((r) => r.data)
   },

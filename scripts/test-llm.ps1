@@ -12,18 +12,21 @@ if (Test-Path $envFile) {
     }
 }
 
-# Fill in defaults (matching start-app-real.ps1)
-$env:DATABASE_URL = "postgresql+asyncpg://postgres@127.0.0.1:5432/gevic"
 if (-not $env:LLM_BASE_URL) { $env:LLM_BASE_URL = "https://dashscope.aliyuncs.com/compatible-mode/v1" }
 if (-not $env:LLM_MODEL) { $env:LLM_MODEL = "qwen-vl-plus" }
-$env:PYTHONPATH = ".."
+$env:PYTHONPATH = (Join-Path $PSScriptRoot "..")
 
-Write-Host "Test 1: text-only chat" -ForegroundColor Cyan
-Write-Host ("  model=" + $env:LLM_MODEL) -ForegroundColor DarkGray
-& "..\backend\.venv\Scripts\python.exe" -c @'
-import asyncio, time
+Write-Host ("LLM config: model=" + $env:LLM_MODEL + " base=" + $env:LLM_BASE_URL) -ForegroundColor Cyan
+Write-Host ""
+
+# Write Python test to a temp file (avoids -c escaping issues)
+$pyFile = Join-Path $env:TEMP "gevic_test_llm.py"
+@"
+import asyncio, base64, time, struct, zlib, sys
+sys.path.insert(0, r"$env:PYTHONPATH")
 from app.config import get_settings
 from app.services.llm_client import LLMClient
+
 async def main():
     s = get_settings()
     print("  LLM_MOCK_MODE:", s.llm_mock_mode)
@@ -32,27 +35,16 @@ async def main():
     try:
         r = await c.chat("You are a test assistant.", "Reply with one word: PONG", temperature=0.0)
         dt = int((time.monotonic() - t0) * 1000)
-        print("  OK in " + str(dt) + "ms")
+        print("  TEXT OK in " + str(dt) + "ms")
         print("  model:", r.get("model"))
         print("  content:", r.get("content"))
         print("  usage:", r.get("usage"))
     except Exception as e:
-        print("  FAILED:", e)
-    finally:
+        print("  TEXT FAILED:", e)
         await c.close()
-asyncio.run(main())
-'@
-if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-
-Write-Host ""
-Write-Host "Test 2: multimodal (image + text)" -ForegroundColor Cyan
-& "..\backend\.venv\Scripts\python.exe" -c @'
-import asyncio, base64, time, struct, zlib
-from app.config import get_settings
-from app.services.llm_client import LLMClient
-async def main():
-    s = get_settings()
-    c = LLMClient(s)
+        return
+    print("")
+    print("Test 2: multimodal (image + text)")
     def make_png():
         w, h = 4, 4
         raw = b"".join(b"\xff\x00\x00" * w for _ in range(h))
@@ -66,18 +58,22 @@ async def main():
     url = "data:image/png;base64," + b64
     t0 = time.monotonic()
     try:
-        r = await c.chat_with_images("Describe the image.", "What color is this?", [url], temperature=0.0)
+        r = await c.chat_with_images("Describe the image briefly.", "What color is this small image?", [url], temperature=0.0)
         dt = int((time.monotonic() - t0) * 1000)
-        print("  OK in " + str(dt) + "ms")
+        print("  IMAGE OK in " + str(dt) + "ms")
         print("  model:", r.get("model"))
         print("  content:", r.get("content")[:200])
         print("  usage:", r.get("usage"))
     except Exception as e:
-        print("  FAILED:", e)
-    finally:
-        await c.close()
+        print("  IMAGE FAILED:", e)
+    await c.close()
+
 asyncio.run(main())
-'@
+"@ | Set-Content -Path $pyFile -Encoding UTF8
+
+Write-Host "Test 1: text-only chat" -ForegroundColor Cyan
+& "$PSScriptRoot\..\backend\.venv\Scripts\python.exe" $pyFile
+if ($LASTEXITCODE -ne 0) { Write-Host ("Exit code: " + $LASTEXITCODE) -ForegroundColor Red }
 
 Write-Host ""
-Write-Host "Both tests done. If you see OK + content, your LLM is working." -ForegroundColor Green
+Write-Host "If you see TEXT OK + IMAGE OK with content, your LLM is working." -ForegroundColor Green

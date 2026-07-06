@@ -1,4 +1,4 @@
-# Python
+﻿# Python
 __pycache__/
 *.py[cod]
 *.egg-info/
@@ -55,3 +55,20 @@ playwright/.cache/
 
 # Runtime config (frontend-editable, persisted)
 .runtime-config.json
+
+# Local data directories / binary dumps
+pgsql-data/
+postgres-data/
+redis/
+redis-data/
+redis.zip
+
+# One-off review / scratch doc dumps
+doc_v1.1.md
+doc_v11.md
+review_v1_1.md
+v11_clean.md
+_v11_clean.md
+_v11_temp.md
+_v11_temp.txt
+/screenshots/

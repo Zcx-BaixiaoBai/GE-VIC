@@ -179,7 +179,12 @@
                   <span v-else-if="r.status === 'SUCCESS' && r.enrichment_status === 'ENRICH_FAILED'" class="enrich-tag warn">富化失败</span>
                 </span>
               </td>
-              <td><code class="algo-cell">{{ r.algorithm_code }}</code></td>
+              <td>
+                <div class="algo-cell-group">
+                  <code class="algo-cell">{{ r.algorithm_code }}</code>
+                  <EngineBadge :type="engineTypeOf(r.algorithm_code)" />
+                </div>
+              </td>
               <td class="td-meta">{{ r.asset_id || r.request_meta?.asset_id || '—' }}</td>
               <td class="td-meta">{{ r.inspector_id || r.request_meta?.inspector_id || '—' }}</td>
               <td class="td-num">{{ r.duration_ms ? `${r.duration_ms}ms` : '—' }}</td>
@@ -213,6 +218,7 @@ import { useRouter } from 'vue-router'
 import { useRecordsStore } from '../stores/records'
 import { recordsApi, type Inspection } from '../api/client'
 import RecordDetail from '../components/RecordDetail.vue'
+import EngineBadge from '../components/EngineBadge.vue'
 import { ElMessage } from 'element-plus'
 import {
   CircleCheck,
@@ -244,6 +250,11 @@ const loading = computed(() => store.loading)
 const stats = computed(() => store.stats)
 const statsLoading = computed(() => store.statsLoading)
 const algorithms = computed(() => store.algorithms)
+
+function engineTypeOf(code: string): string {
+  const a = algorithms.value.find((x) => x.code === code)
+  return a ? a.engine_type : ''
+}
 const windowDays = computed(() => stats.value?.window_days ?? 30)
 
 const maxAlgoCount = computed(() => {
@@ -587,6 +598,12 @@ function goUpload() {
   background: #eef2ff;
   padding: 1px 6px;
   border-radius: 5px;
+}
+.algo-cell-group {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
 }
 .td-empty {
   text-align: center;
