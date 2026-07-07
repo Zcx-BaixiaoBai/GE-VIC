@@ -172,9 +172,9 @@
                         :show-text="false"
                         :status="f._status === 'compressing' ? 'warning' : ''"
                       />
-                      <span class="file-item-progress-label">{{ f._speedLabel || '????' }}</span>
+                      <span class="file-item-progress-label">{{ f._speedLabel || '上传中…' }}</span>
                       <span v-if="f._origSize &amp;&amp; f._finalSize &amp;&amp; f._finalSize &lt; f._origSize" class="file-item-progress-meta">
-                        {{ formatSize(f._origSize) }} ? {{ formatSize(f._finalSize) }} (??)
+                        {{ formatSize(f._origSize) }} → {{ formatSize(f._finalSize) }} (压缩)
                       </span>
                     </div>
                   </div>
@@ -255,13 +255,13 @@ interface QueuedFile extends UploadFile {
   _recordId?: number
   _error?: string
   _progress?: number // 0-1
-  _speedLabel?: string // ???? "5.2 MB/s" ? "??? 30%"
-  _origSize?: number // ?????
-  _finalSize?: number // ?????? (???)
+  _speedLabel?: string // (M2 上传相关)
+  _origSize?: number // (M2 上传相关)
+  _finalSize?: number // (M2 上传相关)
 }
 const fileList = ref<QueuedFile[]>([])
 const uploading = ref(false)
-// 5MB ??? TUS ???? (cpolar ???????? session)
+// (M2 上传相关)
 const TUS_THRESHOLD = 5 * 1024 * 1024
 const lastResult = ref<{ record_id: number; status: string; status_url: string } | null>(null)
 const batchResults = ref<{ record_id: number; status: string; file: string }[]>([])
@@ -390,20 +390,20 @@ async function onSubmitIndependent(pending: QueuedFile[]) {
       f._progress = 0
       f._origSize = f.size || 0
 
-      // Step 1: ??????
+      // (M2 上传相关)
       let fileToUpload = f.raw as File
       if ((f.raw?.type || '').startsWith('image/')) {
         f._status = 'compressing'
-        f._speedLabel = '????'
+        f._speedLabel = '上传中…'
         const c = await compressImage(f.raw as File, {
           onProgress: ({ stage }) => {
-            f._speedLabel = stage === 'loading' ? '????' : stage === 'compressing' ? '????' : (stage === 'skipped' ? '???' : '??')
+            f._speedLabel = stage === 'loading' ? '加载中…' : (stage === 'compressing' ? '压缩中…' : (stage === 'skipped' ? '已跳过' : '完成'))
           },
         })
         fileToUpload = c.file
         f._finalSize = c.compressedSize
         if (c.compressed) {
-          ElMessage.info(`?????: ${formatSize(c.originalSize)} ? ${formatSize(c.compressedSize)}`)
+          ElMessage.info(`图片已压缩: ${formatSize(c.originalSize)} → ${formatSize(c.compressedSize)}`)
         }
       }
 
@@ -411,10 +411,10 @@ async function onSubmitIndependent(pending: QueuedFile[]) {
       if (form.assetId) meta.asset_id = form.assetId
       if (form.inspectorId) meta.inspector_id_hint = form.inspectorId
 
-      // Step 2: ???? TUS ????, ????? multipart
+      // (M2 上传相关)
       if (fileToUpload.size >= TUS_THRESHOLD) {
         f._status = 'uploading'
-        f._speedLabel = '????'
+        f._speedLabel = '上传中…'
         const tusMeta = {
           algorithm_code: form.algorithmCode,
           inspector_id: form.inspectorId || 'WEB-DEMO-USER',
@@ -425,49 +425,57 @@ async function onSubmitIndependent(pending: QueuedFile[]) {
           metadata: tusMeta,
           onProgress: (frac) => {
             f._progress = frac
-            f._speedLabel = `??? ${(frac * 100).toFixed(0)}%`
+            const pct = Math.max(0, Math.min(100, Math.round((frac || 0) * 100)))
+            f._speedLabel = `上传中 ${pct}%`
           },
           onStatus: (st) => {
-            f._speedLabel = st === 'resuming' ? '?????' : st
+            f._speedLabel = st === 'resuming' ? '断点续传…' : st
           },
         })
-        // ??: ? TUS session ?? Inspection
-        f._speedLabel = '????'
+        // (M2 上传相关)
+        f._speedLabel = '上传中…'
         const r: { record_id: number; status: string; status_url: string } = await store.finalizeFromTus(form.algorithmCode, sessionId, meta)
         f._status = 'success'
         f._recordId = r.record_id
         f._progress = 1
-        f._speedLabel = '??'
+        f._speedLabel = '上传中…'
       } else {
         f._status = 'uploading'
-        f._speedLabel = '????'
+        f._speedLabel = '上传中…'
         const r: { record_id: number; status: string; status_url: string } = await store.uploadFile(form.algorithmCode, fileToUpload, meta, (e) => {
+          // 至少有 loaded 字节数, 不一定有 total
           if (e.lengthComputable && e.total) {
             f._progress = e.loaded / e.total
-            f._speedLabel = `??? ${(f._progress * 100).toFixed(0)}%`
+          } else {
+            // 不知道总大小: 至少把 loaded 显示出来, 进度按 indeterminate 处理
+            f._progress = Math.min(0.99, (f._progress || 0) + 0.05)  // 缓慢前进
+            f._speedLabel = `上传中… (${formatSize(e.loaded)})`
+            return
           }
+          const pct = Math.max(0, Math.min(100, Math.round(f._progress * 100)))
+          f._speedLabel = `上传中 ${pct}% · ${formatSize(e.loaded)} / ${formatSize(e.total)}`
         })
         f._status = 'success'
         f._recordId = r.record_id
         f._progress = 1
-        f._speedLabel = '??'
+        f._speedLabel = '上传中…'
       }
       batchResults.value.push({ record_id: f._recordId!, status: 'PENDING', file: f.name })
       successCount++
     } catch (e: any) {
       f._status = 'failed'
-      f._error = e?.response?.data?.detail?.message || e?.message || '????'
-      f._speedLabel = '??'
+      f._error = e?.response?.data?.detail?.message || e?.message || '上传中…'
+      f._speedLabel = '失败'
       failCount++
     }
   }
   uploading.value = false
   if (successCount > 0 && failCount === 0) {
-    ElMessage.success(`?? ${successCount} ???????`)
+    ElMessage.success(`全部 ${successCount} 个文件上传成功`)
   } else if (successCount > 0 && failCount > 0) {
-    ElMessage.warning(`${successCount} ??, ${failCount} ??`)
+    ElMessage.warning(`${successCount} 成功, ${failCount} 失败`)
   } else if (failCount > 0) {
-    ElMessage.error(`?? ${failCount} ???????`)
+    ElMessage.error(`全部 ${failCount} 个文件上传失败`)
   }
 }
 function goDashboard() { router.push('/') }
