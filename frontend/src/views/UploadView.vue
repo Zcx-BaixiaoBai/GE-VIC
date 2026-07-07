@@ -389,8 +389,6 @@ async function onSubmitIndependent(pending: QueuedFile[]) {
       f._error = undefined
       f._progress = 0
       f._origSize = f.size || 0
-
-      // (M2 上传相关)
       let fileToUpload = f.raw as File
       if ((f.raw?.type || '').startsWith('image/')) {
         f._status = 'compressing'
@@ -410,8 +408,6 @@ async function onSubmitIndependent(pending: QueuedFile[]) {
       const meta: Record<string, any> = { filename: f.name }
       if (form.assetId) meta.asset_id = form.assetId
       if (form.inspectorId) meta.inspector_id_hint = form.inspectorId
-
-      // (M2 上传相关)
       if (fileToUpload.size >= TUS_THRESHOLD) {
         f._status = 'uploading'
         f._speedLabel = '上传中…'
@@ -424,6 +420,8 @@ async function onSubmitIndependent(pending: QueuedFile[]) {
           endpoint: `${window.location.origin}/api/v1/uploads`,
           metadata: tusMeta,
           onProgress: (frac) => {
+            // eslint-disable-next-line no-console
+            console.debug('[TUS progress]', (frac * 100).toFixed(1) + '%')
             f._progress = frac
             const pct = Math.max(0, Math.min(100, Math.round((frac || 0) * 100)))
             f._speedLabel = `上传中 ${pct}%`
@@ -432,33 +430,43 @@ async function onSubmitIndependent(pending: QueuedFile[]) {
             f._speedLabel = st === 'resuming' ? '断点续传…' : st
           },
         })
-        // (M2 上传相关)
-        f._speedLabel = '上传中…'
+        f._speedLabel = '建立记录…'
         const r: { record_id: number; status: string; status_url: string } = await store.finalizeFromTus(form.algorithmCode, sessionId, meta)
         f._status = 'success'
         f._recordId = r.record_id
         f._progress = 1
-        f._speedLabel = '上传中…'
+        f._speedLabel = '完成'
       } else {
         f._status = 'uploading'
         f._speedLabel = '上传中…'
-        const r: { record_id: number; status: string; status_url: string } = await store.uploadFile(form.algorithmCode, fileToUpload, meta, (e) => {
-          // 至少有 loaded 字节数, 不一定有 total
-          if (e.lengthComputable && e.total) {
-            f._progress = e.loaded / e.total
-          } else {
-            // 不知道总大小: 至少把 loaded 显示出来, 进度按 indeterminate 处理
-            f._progress = Math.min(0.99, (f._progress || 0) + 0.05)  // 缓慢前进
-            f._speedLabel = `上传中… (${formatSize(e.loaded)})`
-            return
+        // 200ms 轮询兜底, 即使 onUploadProgress 不触发, bar 也会缓慢前进
+        const pollTimer = setInterval(() => {
+          if (f._status !== 'uploading') return
+          if (f._progress < 0.95) {
+            f._progress = Math.min(0.95, (f._progress || 0) + 0.02)
+            const pct = Math.round(f._progress * 100)
+            f._speedLabel = `上传中 ${pct}%`
           }
-          const pct = Math.max(0, Math.min(100, Math.round(f._progress * 100)))
-          f._speedLabel = `上传中 ${pct}% · ${formatSize(e.loaded)} / ${formatSize(e.total)}`
-        })
-        f._status = 'success'
-        f._recordId = r.record_id
-        f._progress = 1
-        f._speedLabel = '上传中…'
+        }, 200)
+        try {
+          const r: { record_id: number; status: string; status_url: string } = await store.uploadFile(form.algorithmCode, fileToUpload, meta, (e) => {
+            // eslint-disable-next-line no-console
+            console.debug('[direct upload progress]', e.loaded, '/', e.total, 'lengthComputable=', e.lengthComputable)
+            if (e.lengthComputable && e.total) {
+              f._progress = e.loaded / e.total
+              const pct = Math.max(0, Math.min(100, Math.round(f._progress * 100)))
+              f._speedLabel = `上传中 ${pct}% · ${formatSize(e.loaded)} / ${formatSize(e.total)}`
+            } else {
+              f._speedLabel = `上传中… (${formatSize(e.loaded)})`
+            }
+          })
+          f._status = 'success'
+          f._recordId = r.record_id
+          f._progress = 1
+          f._speedLabel = '完成'
+        } finally {
+          clearInterval(pollTimer)
+        }
       }
       batchResults.value.push({ record_id: f._recordId!, status: 'PENDING', file: f.name })
       successCount++
