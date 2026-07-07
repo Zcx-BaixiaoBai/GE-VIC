@@ -165,6 +165,18 @@
                     <strong>{{ f.name }}</strong>
                     <div class="muted small">{{ formatSize(f.size || 0) }} · {{ f.raw?.type || '未知类型' }}</div>
                     <div v-if="f._status === 'failed'" class="file-item-error">{{ f._error }}</div>
+                    <div v-else-if="f._status === 'uploading' || f._status === 'compressing'" class="file-item-progress">
+                      <el-progress
+                        :percentage="Math.round((f._progress || 0) * 100)"
+                        :stroke-width="6"
+                        :show-text="false"
+                        :status="f._status === 'compressing' ? 'warning' : ''"
+                      />
+                      <span class="file-item-progress-label">{{ f._speedLabel || '????' }}</span>
+                      <span v-if="f._origSize &amp;&amp; f._finalSize &amp;&amp; f._finalSize &lt; f._origSize" class="file-item-progress-meta">
+                        {{ formatSize(f._origSize) }} ? {{ formatSize(f._finalSize) }} (??)
+                      </span>
+                    </div>
                   </div>
                   <el-button
                     :icon="DeleteIcon"
@@ -219,6 +231,8 @@ import { computed, onMounted, reactive, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { useRecordsStore } from '../stores/records'
 import { ElMessage, type UploadFile, type UploadRawFile } from 'element-plus'
+import { compressImage } from '../composables/useImageCompress'
+import { tusUpload } from '../composables/useTusUpload'
 import {
   Check, CircleCheckFilled, Connection, DataLine, Delete, Document, Loading, Location,
   Plus, Promotion, Refresh, UploadFilled, User, VideoPlay, WarningFilled,
@@ -237,12 +251,18 @@ const form = reactive({ algorithmCode: '', assetId: '', inspectorId: '' })
 const uploadMode = ref<'independent' | 'joint'>('joint')  // 默认联合分析
 interface QueuedFile extends UploadFile {
   previewUrl?: string | null
-  _status?: 'pending' | 'uploading' | 'success' | 'failed'
+  _status?: 'pending' | 'compressing' | 'uploading' | 'success' | 'failed'
   _recordId?: number
   _error?: string
+  _progress?: number // 0-1
+  _speedLabel?: string // ???? "5.2 MB/s" ? "??? 30%"
+  _origSize?: number // ?????
+  _finalSize?: number // ?????? (???)
 }
 const fileList = ref<QueuedFile[]>([])
 const uploading = ref(false)
+// 5MB ??? TUS ???? (cpolar ???????? session)
+const TUS_THRESHOLD = 5 * 1024 * 1024
 const lastResult = ref<{ record_id: number; status: string; status_url: string } | null>(null)
 const batchResults = ref<{ record_id: number; status: string; file: string }[]>([])
 const loadingAlgos = ref(false)
@@ -365,30 +385,89 @@ async function onSubmitIndependent(pending: QueuedFile[]) {
   let successCount = 0
   let failCount = 0
   for (const f of pending) {
-    f._status = 'uploading'
-    f._error = undefined
     try {
+      f._error = undefined
+      f._progress = 0
+      f._origSize = f.size || 0
+
+      // Step 1: ??????
+      let fileToUpload = f.raw as File
+      if ((f.raw?.type || '').startsWith('image/')) {
+        f._status = 'compressing'
+        f._speedLabel = '????'
+        const c = await compressImage(f.raw as File, {
+          onProgress: ({ stage }) => {
+            f._speedLabel = stage === 'loading' ? '????' : stage === 'compressing' ? '????' : (stage === 'skipped' ? '???' : '??')
+          },
+        })
+        fileToUpload = c.file
+        f._finalSize = c.compressedSize
+        if (c.compressed) {
+          ElMessage.info(`?????: ${formatSize(c.originalSize)} ? ${formatSize(c.compressedSize)}`)
+        }
+      }
+
       const meta: Record<string, any> = { filename: f.name }
       if (form.assetId) meta.asset_id = form.assetId
       if (form.inspectorId) meta.inspector_id_hint = form.inspectorId
-      const r = await store.uploadFile(form.algorithmCode, f.raw as File, meta)
-      f._status = 'success'
-      f._recordId = r.record_id
-      batchResults.value.push({ record_id: r.record_id, status: r.status, file: f.name })
+
+      // Step 2: ???? TUS ????, ????? multipart
+      if (fileToUpload.size >= TUS_THRESHOLD) {
+        f._status = 'uploading'
+        f._speedLabel = '????'
+        const tusMeta = {
+          algorithm_code: form.algorithmCode,
+          inspector_id: form.inspectorId || 'WEB-DEMO-USER',
+          asset_id: form.assetId || '',
+        }
+        const { sessionId } = await tusUpload(fileToUpload, {
+          endpoint: `${window.location.origin}/api/v1/uploads`,
+          metadata: tusMeta,
+          onProgress: (frac) => {
+            f._progress = frac
+            f._speedLabel = `??? ${(frac * 100).toFixed(0)}%`
+          },
+          onStatus: (st) => {
+            f._speedLabel = st === 'resuming' ? '?????' : st
+          },
+        })
+        // ??: ? TUS session ?? Inspection
+        f._speedLabel = '????'
+        const r: { record_id: number; status: string; status_url: string } = await store.finalizeFromTus(form.algorithmCode, sessionId, meta)
+        f._status = 'success'
+        f._recordId = r.record_id
+        f._progress = 1
+        f._speedLabel = '??'
+      } else {
+        f._status = 'uploading'
+        f._speedLabel = '????'
+        const r: { record_id: number; status: string; status_url: string } = await store.uploadFile(form.algorithmCode, fileToUpload, meta, (e) => {
+          if (e.lengthComputable && e.total) {
+            f._progress = e.loaded / e.total
+            f._speedLabel = `??? ${(f._progress * 100).toFixed(0)}%`
+          }
+        })
+        f._status = 'success'
+        f._recordId = r.record_id
+        f._progress = 1
+        f._speedLabel = '??'
+      }
+      batchResults.value.push({ record_id: f._recordId!, status: 'PENDING', file: f.name })
       successCount++
     } catch (e: any) {
       f._status = 'failed'
-      f._error = e?.response?.data?.detail?.message || e?.message || '上传失败'
+      f._error = e?.response?.data?.detail?.message || e?.message || '????'
+      f._speedLabel = '??'
       failCount++
     }
   }
   uploading.value = false
   if (successCount > 0 && failCount === 0) {
-    ElMessage.success(`全部 ${successCount} 个文件上传成功`)
+    ElMessage.success(`?? ${successCount} ???????`)
   } else if (successCount > 0 && failCount > 0) {
-    ElMessage.warning(`${successCount} 成功, ${failCount} 失败`)
+    ElMessage.warning(`${successCount} ??, ${failCount} ??`)
   } else if (failCount > 0) {
-    ElMessage.error(`全部 ${failCount} 个文件上传失败`)
+    ElMessage.error(`?? ${failCount} ???????`)
   }
 }
 function goDashboard() { router.push('/') }
@@ -474,6 +553,10 @@ function goDashboard() { router.push('/') }
 .file-item-info { flex: 1; min-width: 0; }
 .file-item-info strong { display: block; font-size: 13px; color: #0f172a; font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .file-item-error { font-size: 11.5px; color: #b91c1c; margin-top: 2px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.file-item-progress { display: flex; align-items: center; gap: 8px; margin-top: 6px; flex-wrap: wrap; }
+.file-item-progress :deep(.el-progress) { flex: 1 1 140px; min-width: 100px; }
+.file-item-progress-label { font-size: 11.5px; color: #6366f1; font-weight: 500; }
+.file-item-progress-meta { font-size: 11px; color: #16a34a; font-weight: 500; }
 .file-item-uploading { color: #d97706; font-size: 11.5px; margin-top: 2px; }
 .file-preview { display: flex; align-items: center; gap: 16px; padding: 16px; width: 100%; background: #fff; }
 .file-thumb { width: 96px; height: 96px; border-radius: 10px; background: #f1f5f9; display: grid; place-items: center; overflow: hidden; flex-shrink: 0; }

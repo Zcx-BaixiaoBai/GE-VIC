@@ -75,3 +75,7 @@ _v11_temp.txt
 
 # One-off dev/debug Python scripts (含硬编码凭据 / monkey-patch 源文件)
 scripts/*.py
+
+# TUS 断点续传临时文件
+upload-tmp/
+backend/upload-tmp/

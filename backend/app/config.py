@@ -1,5 +1,6 @@
 ﻿"""应用配置 - pydantic-settings 从环境变量加载"""
 from functools import lru_cache
+from pathlib import Path
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -43,9 +44,16 @@ class Settings(BaseSettings):
     # 文件上传限制
     max_image_size: int = 20 * 1024 * 1024  # 20MB
     max_video_size: int = 500 * 1024 * 1024  # 500MB
+    # 触发 TUS 断点续传的阈值 (小于此值走直接 POST, 大于等于走 TUS)
+    tus_threshold: int = 5 * 1024 * 1024  # 5MB
+    # TUS 单片大小提示 (前端可参考, 后端不强制)
+    tus_chunk_size: int = 5 * 1024 * 1024  # 5MB
 
     # 任务同步模式: True 时 API 端点同步执行任务 (不依赖 Celery worker, 本地 dev 友好)
     task_sync_mode: bool = False
+
+    # TUS 临时文件目录 (相对路径相对于 backend 工作目录)
+    upload_tmp_dir: str = "upload-tmp"
 
 
 @lru_cache(maxsize=1)

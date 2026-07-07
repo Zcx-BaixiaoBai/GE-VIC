@@ -2,6 +2,8 @@ import axios from 'axios'
 import { ElMessage } from 'element-plus'
 
 const api = axios.create({ baseURL: '/api/v1', timeout: 30000 })
+// ???????????? (cpolar ??? 50MB ?? 5-10 ??)
+const UPLOAD_TIMEOUT = 30 * 60 * 1000 // 30 ??
 
 api.interceptors.request.use((config) => {
   const id = localStorage.getItem('inspector_id') || 'WEB-DEMO-USER'
@@ -153,14 +155,33 @@ export const recordsApi = {
     api.get<{ items: Inspection[]; total: number }>('/records', { params }).then((r) => r.data),
   stats: () => api.get<RecordStats>('/records/stats').then((r) => r.data),
   get: (id: number) => api.get<Inspection>(`/records/${id}`).then((r) => r.data),
-  upload: (code: string, file: File, meta: Record<string, any> = {}) => {
+  upload: (
+    code: string,
+    file: File,
+    meta: Record<string, any> = {},
+    onUploadProgress?: (e: import('axios').AxiosProgressEvent) => void,
+  ) => {
     const fd = new FormData()
     fd.append('file', file)
     fd.append('meta', JSON.stringify(meta))
     return api
       .post<{ record_id: number; status: string; status_url: string }>(`/inspect/${code}`, fd, {
         headers: { 'Content-Type': 'multipart/form-data' },
+        timeout: UPLOAD_TIMEOUT,
+        onUploadProgress,
       })
+      .then((r) => r.data)
+  },
+  finalizeFromTus: (code: string, sessionId: string, meta: Record<string, any> = {}) => {
+    // TUS ?????, ? session ?? Inspection
+    const fd = new FormData()
+    fd.append('meta', JSON.stringify(meta))
+    return api
+      .post<{ record_id: number; status: string; status_url: string }>(
+        `/inspect/${code}/from-upload/${sessionId}`,
+        fd,
+        { headers: { 'Content-Type': 'multipart/form-data' }, timeout: UPLOAD_TIMEOUT },
+      )
       .then((r) => r.data)
   },
   uploadBatch: (code: string, files: File[], meta: Record<string, any> = {}) => {
@@ -170,7 +191,7 @@ export const recordsApi = {
     return api
       .post<{ record_id: number; status: string; status_url: string }>(`/inspect/${code}/batch`, fd, {
         headers: { 'Content-Type': 'multipart/form-data' },
-        timeout: 120000,
+        timeout: UPLOAD_TIMEOUT,
       })
       .then((r) => r.data)
   },

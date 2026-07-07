@@ -39,13 +39,26 @@ export const useRecordsStore = defineStore('records', () => {
     return await recordsApi.get(id)
   }
 
-  async function uploadFile(code: string, file: File, meta: Record<string, any> = {}) {
-    return await recordsApi.upload(code, file, meta)
+  async function uploadFile(
+    code: string,
+    file: File,
+    meta: Record<string, any> = {},
+    onUploadProgress?: (e: import('axios').AxiosProgressEvent) => void,
+  ) {
+    return await recordsApi.upload(code, file, meta, onUploadProgress)
+  }
+
+  async function finalizeFromTus(code: string, sessionId: string, meta: Record<string, any> = {}) {
+    return await recordsApi.finalizeFromTus(code, sessionId, meta)
   }
 
   async function uploadBatch(code: string, files: File[], meta: Record<string, any> = {}) {
     return await recordsApi.uploadBatch(code, files, meta)
   }
 
-  return { records, algorithms, loading, total, stats, statsLoading, fetchRecords, fetchStats, fetchAlgorithms, fetchRecord, uploadFile, uploadBatch }
+  return {
+    records, algorithms, loading, total, stats, statsLoading,
+    fetchRecords, fetchStats, fetchAlgorithms, fetchRecord,
+    uploadFile, finalizeFromTus, uploadBatch,
+  }
 })

@@ -62,6 +62,14 @@ async def lifespan(app: FastAPI):
                 logger.warning("Failed to update algorithms count metric: %s", e)
         except Exception as e:
             logger.warning("Failed to load algorithm registry on startup: %s", e)
+
+    # ????? TUS ????
+    try:
+        from app.api.tus import gc_expired_sessions
+        await gc_expired_sessions()
+    except Exception as e:
+        logger.warning("TUS GC failed on startup: %s", e)
+
     yield
     await dispose_engine()
 
