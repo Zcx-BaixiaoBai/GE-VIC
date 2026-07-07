@@ -129,3 +129,34 @@ async def gateway_proxy(code: str, request: Request):
 | M1 (多算法) | 暴露 Prometheus 指标, 等待大系统接入 | ✅ 已实现 |
 | M2 (海康 PoC) | 评估是否需要新接口 | 规划中 |
 | M3+ (规模化) | 与大系统集成 | 待业务方需求 |
+﻿
+
+## 4. V1.3 新增端点 (M2: TUS 断点续传)
+
+> 大平台代理时同样转发, 详见 [upload-protocol.md](./upload-protocol.md)。
+
+| Method | Path | 调用方 | 说明 |
+|---|---|---|---|
+| OPTIONS | /api/v1/uploads | 浏览器 | TUS 协议能力查询 (大平台可缓存) |
+| POST | /api/v1/uploads | 浏览器 (TUS 客户端) | 创建上传会话, 返回 sessionId |
+| PATCH | /api/v1/uploads/{id} | 浏览器 (TUS 客户端) | 追加分片, 多次 |
+| DELETE | /api/v1/uploads/{id} | 浏览器 (TUS 客户端) | 取消上传 |
+| POST | /api/v1/inspect/{code}/from-upload/{id} | 浏览器 | TUS 完成后, 把临时文件转 Inspection |
+
+### 4.1 大平台转发建议
+
+- **OPTIONS 缓存**: 大平台网关可缓存 OPTIONS 响应 1 小时 (协议头不会变)
+- **超时**: 大平台到本系统的 PATCH 超时建议设 ≥ 5 分钟 (cpolar 弱网下大文件单片可能要 2-3 分钟)
+- **请求体大小**: PATCH 请求体可大到 `tus_chunk_size` (默认 5MB), 大平台网关要放行
+- **CORS**: 已配 `allow_origins=["*"]`, 大平台代理后无需额外 CORS 头
+- **审计**: TUS 端点暂不写 audit_log (会话级别粒度太细), 真正创建 Inspection 的 `from-upload` 端点写
+
+### 4.2 错误码扩展
+
+| HTTP | code | 触发 | 客户端处理 |
+|---|---|---|---|
+| 409 | (无 code) | PATCH 时 `Upload-Offset` 不匹配 | 用 HEAD 拿正确 offset 后重试 |
+| 410 | UPLOAD_INCOMPLETE | finalize 时 `offset < total_size` | 重新选文件上传 |
+| 410 | UPLOAD_FILE_MISSING | finalize 时临时文件被人为删 | 重新选文件上传 |
+| 412 | (无 code) | Tus-Resumable 版本不对 | 升级前端或忽略 |
+| 413 | FILE_TOO_LARGE | 视频 > 500MB / 图片 > 20MB | UI 提示压缩后再上传 |

@@ -90,3 +90,48 @@ groups:
 - `backend/app/services/metrics.py` — 指标定义
 - `backend/app/main.py` — `/health/live`, `/health/ready`, `/metrics` 端点
 - `docs/superpowers/state-machine.md` — 状态流转定义
+﻿
+
+## 7. TUS 上传相关告警 (V1.3 新增)
+
+> 监控 TUS 临时文件堆积 + 异常状态。
+
+### 7.1 临时文件堆积
+
+```yaml
+groups:
+  - name: gevic.tus
+    rules:
+      - alert: GevicTusSessionBacklog
+        expr: count(upload_sessions{status="uploading"}) > 100
+        for: 30m
+        labels:
+          severity: warning
+        annotations:
+          summary: "TUS uploading 会话堆积 ({{ $value }})"
+          description: "uploading 状态会话超过 100 个持续 30 分钟, 可能客户端异常未完成上传。"
+```
+
+**当前实现**: V1.3 不直接暴露到 Prometheus (无 SQL gauge), 建议用 SQL 监控:
+
+```sql
+SELECT status, COUNT(*), MAX(updated_at) FROM upload_sessions GROUP BY status;
+-- 若 uploading 持续 > 100, 说明有积压
+```
+
+### 7.2 临时文件磁盘占用
+
+不在 Prometheus, 用 cron 监控磁盘:
+
+```bash
+# /etc/cron.daily/gevic-tus-disk-check
+USAGE=$(du -sb /opt/gevic/upload-tmp/ | awk '{print $1}')
+THRESHOLD=$((50 * 1024 * 1024 * 1024))  # 50GB
+if [ "$USAGE" -gt "$THRESHOLD" ]; then
+  echo "GE-VIC TUS temp dir > 50GB: $USAGE bytes" | mail -s "ALERT" admin@example.com
+fi
+```
+
+### 7.3 finalize 失败率 (待 M3 实现)
+
+当前无指标, TUS 完成后到 Inspection 创建的失败率未量化。M3 评估: 加 `gevic_tus_finalize_total{status}` 计数器。

@@ -1,17 +1,34 @@
-# GE-VIC 图像识别平台 (M0)
+﻿# GE-VIC 图像识别平台 (M2)
 
 > 基础设施巡检图像识别后端 + 管理看板
-> 设计规范: docs/superpowers/specs/2026-07-01-image-recognition-architecture-design.md
-> M0 目标: 1 个算法跑通端到端 (上传 → 入队 → 识别 → LLM 富化 → 入库 → 看板查询)
+> 设计规范: docs/superpowers/specs/2026-07-01-image-recognition-architecture-design.md (V1.3)
+> 当前里程碑: **M2 — 生产可用性** (断点续传 + 客户端压缩 + 进度反馈 + 公网部署)
+
+### 里程碑
+
+| 里程碑 | 状态 | 关键交付 | 交付报告 |
+|---|---|---|---|
+| M0 端到端 | ✅ 完成 | 1 个算法跑通端到端 (上传 → 入队 → 识别 → 富化 → 看板) | [m0-final](./docs/superpowers/plans/2026-07-01-gevic-m0-final.md) |
+| M1 多算法+监控 | ✅ 完成 | 5 算法 + LLM 报告 + 13 Prometheus 指标 | [m1-final](./docs/superpowers/plans/2026-07-01-gevic-m1-final.md) |
+| **M2 生产可用性** | ✅ 完成 | TUS 断点续传 + 客户端压缩 + 进度条 + 公网部署 (cpolar) | [m2-final](./docs/superpowers/plans/2026-07-01-gevic-m2-final.md) |
+
+### 快速链接
+
+- 📖 [完整设计规范 V1.3](./docs/superpowers/specs/2026-07-01-image-recognition-architecture-design.md)
+- 🚀 [生产部署指南 (cpolar / 公网映射)](./docs/DEPLOYMENT.md)
+- 📋 [架构决策记录 (ADR)](./docs/superpowers/adr.md)
+- 📊 [M2 实施计划](./docs/superpowers/plans/2026-07-01-gevic-m2-implementation.md)
+- 🔌 [上传协议细节 (TUS)](./docs/superpowers/upload-protocol.md)
 
 ## 架构总览
 
 - **接入层**: FastAPI 0.110+ (Python 3.11+)
 - **任务层**: Celery 5.3+ + Redis
-- **引擎层**: 插件化适配器 (Mock / CloudVision)
+- **引擎层**: 插件化适配器 (Mock / CloudVision / MultimodalLLM)
 - **数据层**: PostgreSQL 16 + MinIO
 - **前端**: Vue 3.4 + Vite 5 + Element Plus + Pinia + Vue Router
 - **LLM**: OpenAI 兼容 chat API (DashScope / OpenAI / 自建网关)
+- **上传协议**: TUS 1.0.0 (断点续传) + Canvas 客户端压缩
 
 ## 服务端口
 
@@ -23,6 +40,16 @@
 | redis | 6379 |
 | minio | 9000/9001 |
 
+### M2 核心能力 - 大文件上传
+
+| 文件类型 | 大小限制 | 上传方式 | 用户体验 |
+|---|---|---|---|
+| 图片 (jpg/png/webp/heic) | 20MB (raw) / 500KB (压缩后实际) | Canvas 客户端压缩 → 小文件走 multipart, 大文件走 TUS | 实时进度条 |
+| 视频 (mp4/mov/avi/mkv) | 500MB | TUS 断点续传 (分片 5MB) | 实时进度条 + 自动重试 5 次 + 断网续传 |
+| HEIC (iPhone 原生) | 20MB | 透传给后端 (Chrome/Firefox 不能 canvas 解码 HEIC) | 进度条 |
+
+详见 [上传协议细节](./docs/superpowers/upload-protocol.md) 和 [ADR-002](./docs/superpowers/adr.md)。
+
 ## 快速启动 (Docker Compose, 生产路径)
 
 ```bash
@@ -30,7 +57,7 @@ cp .env.example .env
 # 编辑 .env 填入真实 LLM_API_KEY 等
 docker compose up -d
 
-# 跑迁移 (一次性)
+# 跑迁移 (一次性, M0 + M1 + M2 全部迁移)
 docker compose exec backend alembic upgrade head
 
 # 浏览器访问
@@ -63,7 +90,7 @@ powershell -File scripts\start-app.ps1
 - 选该算法上传图片, 立即看到 SUCCESS + ENRICHED 完整流程
 - 浏览器测试无需任何云凭据
 
-**生产部署 (Linux/Docker)**: 保持两个开关为 `false`, 由 Celery worker 异步消费 + 真实 LLM 接入。
+**生产部署 (Linux/Docker 或 cpolar 映射)**: 保持两个开关为 `false`, 由 Celery worker 异步消费 + 真实 LLM 接入。详见 [DEPLOYMENT.md](./docs/DEPLOYMENT.md)。
 
 ### 手动启动 (无 scripts)
 
@@ -98,7 +125,7 @@ npm run dev
 ## 测试
 
 ```bash
-# 后端单元测试 (46 项, 无需服务)
+# 后端单元测试 (55+ 项, 含 9 项 TUS 协议测试, 无需 DB/服务)
 cd backend
 .\.venv\Scripts\python.exe -m pytest -v
 
@@ -106,6 +133,7 @@ cd backend
 cd frontend
 npx playwright install chromium
 npm run test:e2e
+# 跑指定套件: npx playwright test tests/e2e/09-tus-upload.spec.ts
 ```
 
 ## 新增算法

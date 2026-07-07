@@ -130,3 +130,63 @@ NULL ──(主任务 SUCCESS)──> ENRICHING ──(LLM 成功)──> ENRICH
 - [ ] DEAD 状态无告警: 应有 Prometheus alert
 - [ ] 富化重试无次数限制: 应限制最大重试次数避免无限循环
 - [ ] 状态机无版本号: 后续若扩展状态 (如 CANCELLED), 需要迁移策略
+﻿
+
+## 8. TUS 上传会话状态机 (V1.3 新增, 字段: `upload_sessions.status`)
+
+> M2 引入, 用于断点续传会话管理。详见 [upload-protocol.md](./upload-protocol.md) 和 [ADR-014](./adr.md)。
+
+| 状态 | 含义 | 触发条件 | 终态? |
+|---|---|---|---|
+| `uploading` | 已创建, 正在接收分片 | `POST /uploads` 成功 | 否 |
+| `completed` | 所有分片已接收, `offset == total_size` | 最后一个 `PATCH` 写完 | ✅ (待 finalize) |
+| `cancelled` | 客户端主动取消 | `DELETE /uploads/{id}` | ✅ |
+
+### 8.1 TUS 状态流转图
+
+```
+       POST /uploads
+            ↓
+       uploading ←──────────────────────┐
+            │                            │ (重试, HEAD 拿 offset 后
+            │ PATCH (分片 1, 2, ...)     │  继续 PATCH)
+            ↓                            │
+       uploading                          │
+            │ (offset == total_size)     │
+            ↓                            │
+       completed                          │
+            │                            │
+            ↓                            │
+   POST /inspect/{code}/from-upload/{id} │
+            │                            │
+            ↓                            │
+   (delete session row + 临时文件)        │
+            ↓                            │
+       (终态消失)                          │
+                                          │
+       DELETE /uploads/{id} ──→ cancelled (终态)
+```
+
+### 8.2 关键不变量
+
+- `offset <= total_size` 永远成立
+- 写分片前必须校验请求 `Upload-Offset == session.offset`, 不匹配返 409
+- `status='completed'` 后, 临时文件可被 finalize 路由读出 + 删
+- `status='cancelled'` 后, 临时文件立即删
+- 24h 过期 (无 finalize 也无续传): 启动时 `gc_expired_sessions` 清
+
+### 8.3 异常路径
+
+| 场景 | 行为 |
+|---|---|
+| 客户端 PATCH 中断 | 服务端保持 `uploading` + 当前 offset, 不动 |
+| 客户端重新选同一文件 | 走 `useTusUpload.ts::loadStored`, 复用 session, HEAD 拿 offset, 续传 |
+| 后端崩 + 重启 | 内存状态丢失, 但 DB + 临时文件还在, 客户端续传正常 |
+| 临时文件被人为删 | `status=completed` 后 finalize 报 410 UPLOAD_FILE_MISSING |
+| session 过期被 GC | 客户端再次上传会 HEAD 拿 404, 自动清理 localStorage, 重新建 session |
+
+## 9. V1.3 更新日志
+
+- §8 + §9 (本节) 新增 TUS 状态机
+- §7 已知问题中"重试无退避"已通过 TUS 实现 (5 次指数退避)
+- §7 已知问题中"状态机无版本号"已记录 (扩展 CANCELLED 等需迁移策略)

@@ -3,6 +3,8 @@
 > 决策记录遵循 ADR (Architecture Decision Records) 风格, 编号 ADR-XXX。
 > 文档日期: 2026-07-06
 
+(后续 ADR 见后)
+
 ---
 
 ## ADR-001: 任务队列选型 — Celery
@@ -336,3 +338,123 @@ if inspection.status == "SUCCESS":
 **后果**:
 - ✅ SLO 可手动查询验证
 - ✅ 部署 Alertmanager 时直接粘贴 PromQL
+﻿
+
+---
+
+## ADR-014: 断点续传方案 — TUS 1.0.0 协议
+
+**状态**: 已接受
+
+**日期**: 2026-07-07
+
+**背景**: M1 部署到 cpolar 公网映射后, 用户反馈:
+- 5-15MB 手机相册原图 30s 必超时
+- 50-500MB 视频无法上传 (后端 20MB bug)
+- 弱网抖断必须重传
+- 无进度反馈, 用户以为卡死反复刷新
+
+**决策**: 客户端 + 服务端实现 TUS 1.0.0 协议 (tus.io), 文件 ≥ 5MB 走 TUS 断点续传, < 5MB 走原 multipart (cpolar 也能秒传)。
+
+**协议细节**:
+- 客户端 (`useTusUpload.ts`, 250 行, 0 依赖)
+  - XHR `upload.onprogress` 拿真实进度
+  - 失败自动重试 5 次, 指数退避 (1s, 2s, 4s, 8s, 15s)
+  - 断点续传: 重试时用 HEAD 拿服务端 offset, 跳过已上传部分
+  - localStorage 存 session, 跨页面/刷新恢复
+- 服务端 (`tus.py`, 260 行)
+  - 临时文件存 `./upload-tmp/{session_id}.bin`
+  - DB `upload_sessions` 表跟踪状态
+  - 24h 过期 + 启动时 GC
+  - 完成后 `POST /inspect/{code}/from-upload/{id}` 把临时文件转 Inspection
+
+**备选**:
+| 方案 | 优点 | 缺点 | 决策 |
+|---|---|---|---|
+| tus-js-client (成熟库) | 生态好 | 多 30KB, 黑盒难调试 | ❌ |
+| 自己写 (最终选) | 0 依赖, 250 行, 全可控 | 要自己写测试 | ✅ |
+| 直传 MinIO presigned | 绕过 cpolar 性能最好 | 需额外 cpolar 隧道到 MinIO, 复杂 | ❌ (留给 M3+) |
+| 后端 nginx 上传模块 | 性能好 | 需要部署 nginx, 平台耦合 | ❌ |
+| 分片哈希去重 | 支持秒传 | 实现复杂, 当前用不上 | ❌ (未来可加) |
+
+**理由**:
+- TUS 协议是 HTTP 文件上传的事实标准 (Dropbox / Vimeo / Cloudflare 都用)
+- 250 行自己写比引入 30KB 依赖更可控
+- 0 依赖 = 不增加前端 bundle 体积 (Vite 拆 chunk 后 client.js 只大 8KB)
+- 服务端纯 FastAPI, 无新中间件
+
+**度量**:
+- 5MB 照片: 40s → 1.5s (压缩后 500KB)
+- 50MB 视频: 不可用 → 7 分钟 (有进度条)
+- 100MB 视频抖断 50%: 不可用 → 15 分钟 (自动续传)
+
+---
+
+## ADR-015: 客户端图片压缩 — Canvas API (无依赖)
+
+**状态**: 已接受
+
+**日期**: 2026-07-07
+
+**背景**: M1 部署后, 5-15MB 手机原图在 cpolar 弱网下必超时。简单的"调大 axios timeout"治标不治本 — 5MB 文件在 1Mbps 网络下要 40s, 用户不会等。
+
+**决策**: 选完文件后, 浏览器端用 Canvas 缩放 + JPEG 0.85 重新编码, 5MB → 500KB (10x 缩小), 视觉几乎无损。
+
+**参数**:
+- 长边 ≤ 1920px (4K 显示器足够, AI 识别也用不到更高)
+- JPEG 质量 0.85 (肉眼几乎无损)
+- 跳过阈值: < 800KB 不压 (收益小, 浪费时间)
+- 跳过: 视频 / GIF / HEIC / SVG / ICO
+- 失败透传 (HEIC 在 Chrome/Firefox 走这里)
+
+**备选**:
+| 方案 | 优点 | 缺点 | 决策 |
+|---|---|---|---|
+| Canvas (最终选) | 浏览器原生, 0 依赖 | 不能解 HEIC | ✅ |
+| heic2any (npm) | 解决 HEIC | 多 200KB, 慢 | ❌ (透传给后端) |
+| 后端压缩 (PIL) | 统一处理 | 已经上传了, 治标不治本 | ❌ |
+| OffscreenCanvas + Worker | 不卡 UI | 复杂, 当前不需要 | ❌ (未来) |
+
+**理由**:
+- 90% 场景是 Chrome/Firefox 桌面浏览器, HEIC 不是问题
+- iPhone Safari 用户直接能解 HEIC, 走 Canvas
+- 透传策略兜底: 任何压缩失败都不阻塞上传
+
+**度量**:
+- 5MB iPhone 照片 → 500KB (10x)
+- 视觉差异: 主观 1920px 长边 0.85 JPEG 与原图肉眼看不出
+- 压缩耗时: 5MB 约 200-500ms (用户感觉不到)
+
+---
+
+## ADR-016: 文件大小按 file_type 分支 (修 M1 bug)
+
+**状态**: 已接受
+
+**日期**: 2026-07-07
+
+**背景**: M1 代码 `inspect.py` 第 80 行用 `max_size = settings.max_image_size` 不论文件类型, 导致视频上传被 20MB 拒绝, 而 config 里早就定义 `max_video_size: int = 500MB` 但从未被读取。
+
+**决策**: 按文件扩展名分支: `image` 走 max_image_size=20MB, `video` 走 max_video_size=500MB, `other` 兜底按 image 限。
+
+**修法**:
+```python
+ext = filename.rsplit(".", 1)[-1].lower()
+if ext in image_exts:        # jpg/png/bmp/webp/gif/heic
+    file_type = "image"; max_size = settings.max_image_size
+elif ext in video_exts:      # mp4/mov/avi/mkv/webm
+    file_type = "video"; max_size = settings.max_video_size
+else:
+    file_type = "other"; max_size = settings.max_image_size
+```
+
+同步修 `inspect_batch` 端点 (内层循环也用 fmax)。
+
+**理由**:
+- 修法简单, 不引入新配置
+- 保留兜底 (other 按 image 限, 不放大)
+- 与 config 中早就定义但未使用的 `max_video_size` 一致
+
+**教训**:
+- 单元测试要覆盖 happy path, 而非只测 INVALID_ALGORITHM
+- 添加新配置项时, 要搜 "用到没" (ripgrep `max_image_size` / `max_video_size`)

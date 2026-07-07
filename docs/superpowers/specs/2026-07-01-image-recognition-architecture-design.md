@@ -1,3 +1,76 @@
+﻿
+---
+
+## 版本变更记录
+
+| 版本 | 日期 | 变更 |
+|---|---|---|
+| V1.0 | 2026-07-01 | 初版, M0 实施 |
+| V1.1 | 2026-07-01 | 取消鉴权 + 完整响应结构 |
+| V1.2 | 2026-07-01 | 评审后定稿 (集成边界, 未来扩展) |
+| **V1.3** | **2026-07-07** | **M2 增量: TUS 断点续传 + 客户端压缩 + 文件大小分支 (详见下方)** |
+
+### V1.3 新增章节 (相对 V1.2)
+
+> 本节为变更摘要, 完整协议与设计详见 [upload-protocol.md](../upload-protocol.md) 和 [ADR-014/015/016](../adr.md)。完整设计如需追溯, 以 V1.2 正文 + 本变更记录 + 新增配套文档为准。
+
+#### §18.2 大文件上传协议 (TUS 1.0.0)
+
+**V1.3 新增**, 原 §18 仅有"小文件 multipart"。
+
+| 文件类型 | 大小 | 协议 | 体验 |
+|---|---|---|---|
+| 图片 ≤ 20MB | raw | Canvas 客户端压缩 → 小文件走 multipart, 大文件走 TUS | 实时进度条 |
+| 视频 ≤ 500MB | raw | TUS 1.0.0 (5MB 分片) | 进度条 + 续传 + 5 次重试 |
+| HEIC | ≤ 20MB | 透传 (Chrome/Firefox) / 压缩 (Safari) | 进度条 |
+
+**新增端点**:
+- `POST /api/v1/uploads` - TUS 创建会话
+- `PATCH /api/v1/uploads/{id}` - 追加分片
+- `HEAD /api/v1/uploads/{id}` - 查询 offset
+- `DELETE /api/v1/uploads/{id}` - 取消
+- `POST /api/v1/inspect/{code}/from-upload/{id}` - finalize
+
+**配置项 (V1.3 新增)**:
+- `max_video_size` (已有, V1.3 真正生效)
+- `tus_threshold` = 5MB
+- `tus_chunk_size` = 5MB
+- `upload_tmp_dir` = `./upload-tmp/`
+
+**新数据表**: `upload_sessions` (alembic 006)
+
+#### §18.3 客户端图片压缩 (V1.3 新增)
+
+- 选完文件后立即压缩 (不等用户点提交)
+- Canvas 等比缩放 + JPEG 0.85
+- 长边 ≤ 1920px
+- 跳过视频 / GIF / HEIC / SVG / ICO / 已 < 800KB
+
+#### §18.4 文件大小按 file_type 分支 (V1.3 修 M1 bug)
+
+| file_type | 限制 | 说明 |
+|---|---|---|
+| image | 20MB | 已有 (不变) |
+| video | 500MB | V1.3 真正生效 (M1 用了 image 的 20MB) |
+| other | 20MB | 兜底 |
+
+#### §18.5 文档体系扩展 (V1.3 新增)
+
+- `docs/superpowers/upload-protocol.md` - TUS 协议实现细节
+- `docs/DEPLOYMENT.md` - 生产部署指南 (含 cpolar)
+
+### V1.3 影响范围 (与 V1.2 兼容性)
+
+- ✅ **后向兼容**: 旧的 `POST /api/v1/inspect/{code}` multipart 仍可用, 小文件 (< 5MB) 自动走该路径
+- ✅ **客户端零侵入升级**: 用户刷新页面即用上 M2 能力, 旧浏览器无 HEIC 压缩但能透传
+- ✅ **数据兼容**: 老的 `inspections` 表无 schema 变更, `upload_sessions` 是新表
+
+### V1.3 未做 (留给 V1.4 / M3+)
+
+- 直传 MinIO presigned multipart (绕过反代)
+- 客户端视频 H.264 重编码
+- S3 multipart 协议本地化 (dropbox-style)
+- 跨会话秒传 (hash 去重)
 ﻿# 图像识别架构设计规范 V1.2
 
 如对本规范有任何疑问或建议，请在评审记录表中填写，版本变更将通过变更记录表追溯。
