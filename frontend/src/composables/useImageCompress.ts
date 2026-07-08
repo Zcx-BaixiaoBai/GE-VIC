@@ -66,6 +66,21 @@ async function loadImage(file: File): Promise<HTMLImageElement> {
   })
 }
 
+type ImageSource = HTMLImageElement | ImageBitmap
+
+/** Decode off the main thread via createImageBitmap when available (less UI
+ *  jank for large images), falling back to <img>. */
+async function loadImageSource(file: File): Promise<ImageSource> {
+  if (typeof createImageBitmap === 'function') {
+    try {
+      return await createImageBitmap(file)
+    } catch {
+      // fall through to <img>
+    }
+  }
+  return loadImage(file)
+}
+
 function calcTargetSize(w: number, h: number, maxEdge: number): { w: number; h: number } {
   if (w <= maxEdge && h <= maxEdge) return { w, h }
   if (w >= h) {
@@ -107,8 +122,10 @@ export async function compressImage(
 
   try {
     opts.onProgress?.({ stage: 'loading' })
-    const img = await loadImage(file)
-    const { w: tw, h: th } = calcTargetSize(img.naturalWidth, img.naturalHeight, o.maxLongEdge)
+    const img = await loadImageSource(file)
+    const iw = 'naturalWidth' in img ? (img as HTMLImageElement).naturalWidth : (img as ImageBitmap).width
+    const ih = 'naturalHeight' in img ? (img as HTMLImageElement).naturalHeight : (img as ImageBitmap).height
+    const { w: tw, h: th } = calcTargetSize(iw, ih, o.maxLongEdge)
 
     opts.onProgress?.({ stage: 'compressing' })
     const canvas = document.createElement('canvas')
@@ -119,7 +136,7 @@ export async function compressImage(
     // ???? PNG ?????
     ctx.fillStyle = '#fff'
     ctx.fillRect(0, 0, tw, th)
-    ctx.drawImage(img, 0, 0, tw, th)
+    ctx.drawImage(img as CanvasImageSource, 0, 0, tw, th)
 
     // ??: jpeg ??; ??? png ????????? png
     const isPng = file.type === 'image/png'

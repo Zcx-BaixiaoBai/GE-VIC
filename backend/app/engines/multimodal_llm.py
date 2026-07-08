@@ -13,11 +13,20 @@ import base64
 import json
 import logging
 import time
+import os
+import subprocess
+import tempfile
 from typing import Any
 
 from app.engines.base import BaseEngine, RecognitionResult
-from app.services.llm_client import LLMClient, make_strict_json_prompt, parse_json_response
+from app.services.llm_client import (
+    LLMClient,
+    get_shared_llm_client,
+    make_strict_json_prompt,
+    parse_json_response,
+)
 from app.config import Settings
+from app.utils.exceptions import LLMError
 
 
 def _build_llm_overrides(config: dict) -> dict:
@@ -129,58 +138,136 @@ def _guess_image_mime(filename: str) -> str:
     return "image/jpeg"
 
 
+def _get_ffmpeg_exe() -> str | None:
+    """Return a usable ffmpeg binary path (bundled imageio-ffmpeg first, then PATH)."""
+    try:
+        import imageio_ffmpeg as iff
+        return iff.get_ffmpeg_exe()
+    except Exception:
+        pass
+    import shutil
+    return shutil.which("ffmpeg")
+
+
+def _probe_duration(ffmpeg: str, in_path: str) -> float | None:
+    """Probe video duration in seconds via ffmpeg stderr."""
+    import re as _re
+    try:
+        r = subprocess.run(
+            [ffmpeg, "-hide_banner", "-i", in_path],
+            capture_output=True, text=True, timeout=60,
+        )
+    except Exception:
+        return None
+    text = (r.stderr or "") + (r.stdout or "")
+    m = _re.search(r"Duration:\s*(\d+):(\d+):(\d+(?:\.\d+)?)", text)
+    if not m:
+        return None
+    return int(m.group(1)) * 3600 + int(m.group(2)) * 60 + float(m.group(3))
+
+
 def _extract_video_frames(
     file_bytes: bytes,
     filename: str,
     n_frames: int = 3,
     max_long_edge: int = 1024,
+    frame_fps: float = 2.0,
+    max_frames: int = 16,
 ) -> list[bytes]:
-    """从视频中抽 N 帧 (均匀采样), 缩放到长边 <= max_long_edge, 返回 JPEG bytes 列表.
+    """Extract frames evenly across the WHOLE video duration.
 
-    Returns:
-        list of JPEG bytes; 失败时返回空列表.
+    Density is `frame_fps` frames/second, capped at `max_frames`. For long
+    videos the effective fps is lowered so samples still span the entire
+    timeline (never just the first few seconds). Frames are downscaled so the
+    long edge <= max_long_edge and returned as JPEG bytes.
+
+    Uses the ffmpeg binary bundled with imageio-ffmpeg (no system ffmpeg
+    needed). Returns [] on failure.
     """
-    try:
-        import imageio.v3 as iio
-    except ImportError:
-        logger.warning("imageio 未安装, 无法抽帧 (pip install imageio imageio-ffmpeg)")
+    ffmpeg = _get_ffmpeg_exe()
+    if ffmpeg is None:
+        logger.error("ffmpeg not found; install imageio-ffmpeg: pip install imageio-ffmpeg")
         return []
 
+    ext = ""
+    name = (filename or "").lower()
+    for e in (".mp4", ".mov", ".avi", ".mkv", ".webm", ".m4v", ".ts"):
+        if name.endswith(e):
+            ext = e
+            break
+    in_fd, in_path = tempfile.mkstemp(suffix=ext or ".mp4")
+    try:
+        os.write(in_fd, file_bytes)
+        os.close(in_fd)
+
+        duration = _probe_duration(ffmpeg, in_path)
+        if duration and duration > 0:
+            eff_fps = min(frame_fps, max_frames / duration)
+        else:
+            eff_fps = frame_fps
+        if eff_fps <= 0:
+            eff_fps = 1.0 / 30.0
+
+        with tempfile.TemporaryDirectory() as outdir:
+            vf = (
+                f"fps={eff_fps},"
+                f"scale='if(gte(iw,ih),min({max_long_edge},iw),-2)':"
+                f"'if(gte(iw,ih),-2,min({max_long_edge},ih))'"
+            )
+            out_pat = os.path.join(outdir, "f_%04d.jpg")
+            proc = subprocess.run(
+                [ffmpeg, "-y", "-hide_banner", "-loglevel", "error", "-i", in_path,
+                 "-vf", vf, "-frames:v", str(max_frames), "-q:v", "3",
+                 "-f", "image2", out_pat],
+                capture_output=True, text=True, timeout=300,
+            )
+            files = sorted(f for f in os.listdir(outdir) if f.endswith(".jpg"))
+            result: list[bytes] = []
+            for f in files:
+                with open(os.path.join(outdir, f), "rb") as fh:
+                    result.append(fh.read())
+            if not result and proc.returncode != 0:
+                logger.warning("ffmpeg frame extraction failed (%s): %s", filename, (proc.stderr or "")[-400:])
+            return result[:max_frames]
+    except Exception as e:
+        logger.warning("video frame extraction failed (%s): %s", filename, e)
+        return []
+    finally:
+        try:
+            os.unlink(in_path)
+        except OSError:
+            pass
+
+
+def _resize_image_bytes(
+    file_bytes: bytes,
+    mime: str,
+    max_long_edge: int = 1536,
+    quality: int = 85,
+) -> tuple[bytes, str]:
+    """Downscale an image so its long edge <= max_long_edge; return (jpeg_bytes, mime).
+
+    Falls back to the original bytes if Pillow is missing or decoding fails.
+    Cuts LLM input size / vision tokens dramatically for large photos.
+    """
     try:
         import io
         from PIL import Image
-    except ImportError:
-        logger.warning("Pillow 未安装, 无法处理视频帧")
-        return []
-
-    try:
-        frames = []
-        for i, frame in enumerate(iio.imiter(file_bytes, plugin="pyav")):
-            if i >= 50:
-                break
-            frames.append(frame)
-        if not frames:
-            return []
-        step = max(1, len(frames) // n_frames)
-        sampled = frames[::step][:n_frames]
-
-        result: list[bytes] = []
-        for arr in sampled:
-            img = Image.fromarray(arr)
-            w, h = img.size
-            if max(w, h) > max_long_edge:
-                if w >= h:
-                    nw, nh = max_long_edge, int(h * max_long_edge / w)
-                else:
-                    nw, nh = int(w * max_long_edge / h), max_long_edge
-                img = img.resize((nw, nh), Image.LANCZOS)
-            buf = io.BytesIO()
-            img.convert("RGB").save(buf, format="JPEG", quality=85)
-            result.append(buf.getvalue())
-        return result
+        img = Image.open(io.BytesIO(file_bytes))
+        img = img.convert("RGB")
+        w, h = img.size
+        if max(w, h) > max_long_edge:
+            if w >= h:
+                nw, nh = max_long_edge, round(h * max_long_edge / w)
+            else:
+                nw, nh = round(w * max_long_edge / h), max_long_edge
+            img = img.resize((nw, nh), Image.LANCZOS)
+        buf = io.BytesIO()
+        img.save(buf, format="JPEG", quality=quality)
+        return buf.getvalue(), "image/jpeg"
     except Exception as e:
-        logger.warning("视频抽帧失败 (%s): %s", filename, e)
-        return []
+        logger.warning("image resize failed (%s): %s; sending original", mime, e)
+        return file_bytes, mime
 
 
 def _encode_data_url(data: bytes, mime: str) -> str:
@@ -417,31 +504,306 @@ def _parse_markdown_report(content):
     return out
 
 
-def _parse_llm_response(content: str) -> dict[str, Any]:
-    """智能解析 LLM 响应: 先尝试 JSON, 失败则尝试 Markdown 报告.
+def _clean_str(v) -> str:
+    """Coerce to a trimmed string; None/NaN/dict -> '' or json."""
+    if v is None:
+        return ""
+    if isinstance(v, (dict, list)):
+        try:
+            import json as _json
+            return _json.dumps(v, ensure_ascii=False)
+        except Exception:
+            return str(v)
+    s = str(v).strip()
+    if s.lower() in ("nan", "none", "null"):
+        return ""
+    return s
 
-    1. 尝试 JSON 解析 (parse_json_response + 容错修复)
-    2. JSON 失败 或 observations 为空, 尝试 Markdown 报告解析
-    3. 都失败则用 fallback (整段文本塞 description)
+
+def _to_confidence(v):
+    """Coerce 0.9 / '90%' / '90' -> float in [0,1], else None."""
+    if v is None or v == "":
+        return None
+    if isinstance(v, (int, float)):
+        f = float(v)
+    else:
+        s = str(v).strip().rstrip("%").replace("\uff0c", ".").replace(",", ".")
+        try:
+            f = float(s)
+        except ValueError:
+            return None
+    if f > 1.0:  # assume percentage (90 -> 0.9)
+        f = f / 100.0
+    if f < 0:
+        return None
+    return round(f, 4)
+
+
+def _extract_confidence(text: str):
+    """Pull a confidence value out of free text like '置信度90%' / 'confidence: 0.8'."""
+    import re
+    m = re.search(r"(?:置信度|confidence|可信度)[:：]?\s*(\d+(?:\.\d+)?%?)", text or "", re.IGNORECASE)
+    return _to_confidence(m.group(1)) if m else None
+
+
+def _extract_priority(text: str) -> str:
+    """Pull a P0-P3 priority tag out of free text (ASCII boundaries only)."""
+    import re
+    m = re.search(r"(?<![A-Za-z0-9])(P[0-3])(?![A-Za-z0-9])", text or "")
+    return m.group(1) if m else ""
+
+
+# Canonical risk mapping (the frontend classifies by substring):
+#   high   = severe / fault / urgent / red / P0
+#   medium = warning / deviation / yellow / P1
+#   low    = normal / green / P2 / P3
+_RISK_HIGH = ("严重", "故障", "紧急", "危急", "高风险", "\U0001f534", "p0")
+_RISK_MED = ("预警", "偏差", "较差", "较高", "异常", "中风险", "\U0001f7e1", "\U0001f7e0", "p1")
+_RISK_LOW = ("正常", "良好", "低风险", "\U0001f7e2", "\u2705", "p2", "p3")
+
+
+def _normalize_risk(v) -> str:
+    """Map free-form risk/severity to a canonical label the frontend can classify."""
+    s = _clean_str(v)
+    if not s:
+        return ""
+    low = s.lower()
+    if any(k in low for k in _RISK_HIGH):
+        return "严重"
+    if any(k in low for k in _RISK_MED):
+        return "预警"
+    if any(k in low for k in _RISK_LOW):
+        return "正常"
+    return ""
+
+
+_NEG_KW = ("未检出", "未发现", "未见", "无明显异常", "无异常", "未观察到", "无缺陷", "未察觉")
+
+
+def _is_negative_obs(label: str, note: str, risk: str, recommendation: str) -> bool:
+    """True if this observation represents a no-finding (未检出/正常), to be shown
+    in a separate 'undetected' section instead of mixed into findings/alarms."""
+    hay = (f"{label} {note}").lower()
+    if any(k in hay for k in _NEG_KW):
+        return True
+    # no priority recommendation + risk is explicitly normal => no-finding
+    if not recommendation and risk == "正常":
+        return True
+    return False
+
+
+def _normalize_parameters(v) -> list:
+    if not isinstance(v, list):
+        return []
+    out = []
+    for p in v:
+        if not isinstance(p, dict):
+            continue
+        out.append({
+            "key": _clean_str(p.get("key") or p.get("name") or p.get("参数")),
+            "value": _clean_str(p.get("value") or p.get("值")),
+            "unit": _clean_str(p.get("unit") or p.get("单位")),
+            "deviation": _clean_str(p.get("deviation") or p.get("偏差")),
+        })
+    return out
+
+
+def _normalize_observation(o) -> dict:
+    """Coerce one observation (JSON/markdown/text) into the canonical schema.
+
+    Missing confidence/risk/priority are re-extracted from the note text so
+    that markdown/prose outputs (which often embed these inline) still yield
+    structured fields.
     """
-    parsed = parse_json_response(content)
-    # 清理 description 字段 (去除 <think> 块、markdown 围栏)
-    if "description" in parsed and isinstance(parsed["description"], str):
-        parsed["description"] = _clean_description(parsed["description"])
-    # 判断是否需要尝试 markdown 解析:
-    # - JSON 解析失败 (没有 _input 字段) 或 observations 为空 + 文本含 ## 标题
-    looks_like_markdown = "##" in content or "###" in content
-    is_structured = isinstance(parsed.get("observations"), list) and len(parsed["observations"]) > 0
-    if not is_structured and looks_like_markdown:
-        md_parsed = _parse_markdown_report(content)
-        # 优先用 markdown 解析的结构, 但保留 JSON 解析的 summary (如果有)
-        if md_parsed.get("observations"):
-            # 合并: markdown 为主, 缺失字段从 JSON 拿
+    import re as _re
+    if not isinstance(o, dict):
+        o = {"label": str(o)}
+    label = _clean_str(o.get("label") or o.get("name") or o.get("device") or o.get("设备")) or "未命名"
+    label = _re.sub(r"^#+\s*", "", label).strip(" :：")
+    note = _strip_think_tags(_clean_str(o.get("note") or o.get("description") or o.get("detail") or o.get("描述")))
+    confidence = _to_confidence(o.get("confidence") or o.get("置信度"))
+    risk = _normalize_risk(o.get("risk") or o.get("severity") or o.get("风险") or o.get("风险等级"))
+    recommendation = _clean_str(o.get("recommendation") or o.get("priority"))
+    # fallback: pull structured bits out of the note text (smarter parsing)
+    hay = f"{label} {note}"
+    if confidence is None:
+        confidence = _extract_confidence(hay)
+    if not risk:
+        risk = _normalize_risk(hay)
+    if not recommendation:
+        recommendation = _extract_priority(hay)
+    is_neg = _is_negative_obs(label, note, risk, recommendation)
+    return {
+        "label": label,
+        "type": _clean_str(o.get("type") or o.get("category") or o.get("类别")),
+        "confidence": confidence,
+        "status": _clean_str(o.get("status") or o.get("state") or o.get("运行状态")),
+        "risk": risk,
+        "note": note,
+        "brand": _clean_str(o.get("brand") or o.get("model") or o.get("品牌型号")),
+        "parameters": _normalize_parameters(o.get("parameters")),
+        "recommendation": recommendation,
+        "recommendation_detail": _clean_str(o.get("recommendation_detail") or o.get("recommendation_text") or o.get("建议")),
+        "is_negative": is_neg,
+    }
+
+
+def _normalize_warnings(v) -> list:
+    if isinstance(v, str):
+        return [v.strip()] if v.strip() else []
+    if not isinstance(v, list):
+        return []
+    out = []
+    for w in v:
+        if isinstance(w, dict):
+            s = _clean_str(w.get("message") or w.get("text") or w.get("content"))
+        else:
+            s = _clean_str(w)
+        if s:
+            out.append(s)
+    return out
+
+
+def _normalize_recognition(parsed, media_type_hint: str, fmt: str) -> dict[str, Any]:
+    """Normalization harness: ALWAYS return the canonical recognition schema.
+
+    Guarantees the frontend gets stable fields + correct types even when the
+    LLM returns markdown, prose, partial JSON, or odd value types.
+    """
+    if not isinstance(parsed, dict):
+        parsed = {"description": str(parsed or "")}
+    desc = _clean_description(_clean_str(parsed.get("description")))
+    if not desc:
+        desc = _clean_description(_clean_str(parsed.get("overview") or parsed.get("content")))
+    obs_raw = parsed.get("observations")
+    if not isinstance(obs_raw, list):
+        obs_raw = []
+    observations = [_normalize_observation(o) for o in obs_raw if o is not None]
+    if not observations and desc:
+        observations = [{
+            "label": "整体分析", "type": "", "confidence": None, "status": "",
+            "risk": "", "note": desc[:300], "brand": "", "parameters": [],
+            "recommendation": "", "recommendation_detail": "",
+        }]
+    summary = _strip_think_tags(_clean_str(parsed.get("summary")))
+    if not summary and desc:
+        summary = desc.split("\n")[0][:200]
+    return {
+        "media_type": _clean_str(parsed.get("media_type")) or media_type_hint or "",
+        "description": desc,
+        "summary": summary,
+        "observations": observations,
+        "warnings": _normalize_warnings(parsed.get("warnings")),
+        "_format": fmt or _clean_str(parsed.get("_format")),
+    }
+
+
+def _parse_structured_text(text: str) -> dict[str, Any]:
+    """Smarter fallback for prose / bullet-list / key:value outputs.
+
+    Handles models that ignore JSON and return plain text with sections,
+    bullet lists, or 'label：value' lines. Produces observations[] + summary.
+    """
+    import re
+    out: dict[str, Any] = {"summary": "", "description": "", "observations": [], "warnings": [], "_format": "text"}
+    if not text:
+        return out
+    lines = [l.rstrip() for l in text.split("\n")]
+    bullets: list[str] = []
+    for raw in lines:
+        s = raw.strip()
+        if not s:
+            continue
+        bm = re.match(r"^([-*\u2022]|\d+[.)])\s+(.+)$", s)
+        if bm:
+            bullets.append(bm.group(2).strip())
+        elif bullets and (raw.startswith("  ") or not re.match(r"^[-*\u2022\d#]", s)):
+            if bullets:
+                bullets[-1] = bullets[-1] + " " + s
+    heads = [re.sub(r"^#+\s*", "", l.strip()).strip(" :：") for l in lines if l.strip().startswith("#")]
+    items = bullets  # headings are section labels, not observations
+    if items:
+        for it in items:
+            it = it.strip()
+            if not it:
+                continue
+            # extract structured bits from free text (smarter parsing)
+            conf = None
+            cm = re.search(r"置信度[:：]?\s*(\d+(?:\.\d+)?%?)", it)
+            if cm:
+                conf = _to_confidence(cm.group(1))
+            rec = ""
+            rcm = re.search(r"\b(P[0-3])\b", it)
+            if rcm:
+                rec = rcm.group(1)
+            risk = _normalize_risk(it)
+            m = re.split(r"[\uff1a:]\s*", it, maxsplit=1)
+            if len(m) == 2 and len(m[0]) < 24:
+                label, note = m[0].strip(), m[1].strip()
+            elif len(it) > 24:
+                label, note = it[:24], it
+            else:
+                label, note = it, ""
+            out["observations"].append({
+                "label": label, "note": note[:300],
+                "confidence": conf, "risk": risk, "recommendation": rec,
+            })
+    for l in lines:
+        s = l.strip()
+        if s and not s.startswith("#") and not re.match(r"^([-*\u2022]|\d+[.)])\s+", s):
+            out["summary"] = s[:200]
+            break
+    if not out["summary"] and items:
+        out["summary"] = items[0][:200]
+    out["description"] = " ".join(l.strip() for l in lines if l.strip() and not l.strip().startswith("#"))[:400]
+    return out
+
+
+def _looks_unsupported_response_format(err: Exception) -> bool:
+    """Heuristic: did the provider reject response_format (json_object)?"""
+    msg = str(err).lower()
+    return any(k in msg for k in ("response_format", "json_object", "json schema", "not support", "unsupported", "invalid"))
+
+
+def _parse_llm_response(content: str, media_type_hint: str = "") -> dict[str, Any]:
+    """Parse LLM output into the canonical recognition schema.
+
+    Layered (harness + smarter parsing):
+      1. strip think/fences + JSON (with repair)
+      2. markdown report if JSON yielded no observations
+      3. structured-text (prose / bullets / key:value) if still nothing
+      4. normalize to canonical schema (always present, correct types)
+    """
+    raw = content or ""
+    parsed = parse_json_response(raw)
+    fmt = "json"
+    obs = parsed.get("observations") if isinstance(parsed.get("observations"), list) else []
+    if not obs and ("##" in raw or "###" in raw):
+        md = _parse_markdown_report(raw)
+        if md.get("observations"):
+            for k in ("summary", "description", "media_type", "warnings"):
+                if not md.get(k) and parsed.get(k):
+                    md[k] = parsed[k]
+            parsed = md
+            fmt = "markdown"
+            obs = md.get("observations") or []
+    # if observations are thin (no note/confidence/risk), the bare-bullet
+    # structured-text parser is usually richer -> prefer it
+    thin = not obs or not any(
+        _clean_str(o.get("note")) or _clean_str(o.get("confidence")) or _clean_str(o.get("risk"))
+        for o in obs if isinstance(o, dict)
+    )
+    if thin:
+        txt = _parse_structured_text(raw)
+        if txt.get("observations"):
             for k in ("summary", "description", "media_type"):
-                if not md_parsed.get(k) and parsed.get(k):
-                    md_parsed[k] = parsed[k]
-            parsed = md_parsed
-    return parsed
+                if not txt.get(k) and parsed.get(k):
+                    txt[k] = parsed[k]
+            if not txt.get("warnings") and parsed.get("warnings"):
+                txt["warnings"] = parsed.get("warnings")
+            parsed = txt
+            fmt = "text"
+    return _normalize_recognition(parsed, media_type_hint, fmt)
 
 
 class MultimodalLLMEngine(BaseEngine):
@@ -451,7 +813,7 @@ class MultimodalLLMEngine(BaseEngine):
 
     def __init__(self, settings: Settings) -> None:
         self.settings = settings
-        self.client = LLMClient(settings)
+        self.client = get_shared_llm_client(settings)
 
     async def recognize(
         self,
@@ -463,11 +825,11 @@ class MultimodalLLMEngine(BaseEngine):
         start = time.monotonic()
         system_prompt = config.get("prompt") or DEFAULT_SYSTEM_PROMPT
         user_prompt_template = config.get("user_prompt") or DEFAULT_USER_PROMPT
-        n_frames = int(config.get("extract_frames", 3))
-        if n_frames < 1:
-            n_frames = 1
-        if n_frames > 8:
-            n_frames = 8
+        frame_fps = float(config.get("frame_fps", 2.0) or 2.0)
+        max_frames = int(config.get("max_frames", 16) or 16)
+        max_frames = max(1, min(32, max_frames))
+        n_frames = max(1, min(8, int(config.get("extract_frames", 3) or 3)))
+        image_max_edge = int(config.get("image_max_long_edge", 1536) or 1536)
 
         meta_str = ", ".join(f"{k}={v}" for k, v in (meta or {}).items() if v is not None)
         user_prompt = user_prompt_template
@@ -480,7 +842,10 @@ class MultimodalLLMEngine(BaseEngine):
 
         try:
             if _is_video(filename, mime):
-                frames = _extract_video_frames(file_bytes, filename, n_frames=n_frames)
+                frames = _extract_video_frames(
+                    file_bytes, filename,
+                    n_frames=n_frames, frame_fps=frame_fps, max_frames=max_frames,
+                )
                 if not frames:
                     return RecognitionResult(
                         success=False,
@@ -496,21 +861,38 @@ class MultimodalLLMEngine(BaseEngine):
                 media_type = "video"
             elif _is_image(filename, mime):
                 img_mime = mime if (mime and mime.lower().startswith("image/")) else _guess_image_mime(filename)
-                data_urls = [_encode_data_url(file_bytes, img_mime)]
+                img_bytes, img_mime_out = _resize_image_bytes(file_bytes, img_mime, max_long_edge=image_max_edge)
+                data_urls = [_encode_data_url(img_bytes, img_mime_out)]
                 media_type = "image"
             else:
                 data_urls = [_encode_data_url(file_bytes, "image/jpeg")]
                 media_type = "unknown"
 
             llm_overrides = _build_llm_overrides(config)
-            client = LLMClient(self.settings, overrides=llm_overrides) if llm_overrides else self.client
-            response = await client.chat_with_images(
-                system_prompt=system_prompt,
-                user_prompt=user_prompt,
-                image_data_urls=data_urls,
-                temperature=float(config.get("temperature", 0.3)),
-            )
-            parsed = _parse_llm_response(response.get("content", ""))
+            client = get_shared_llm_client(self.settings, overrides=llm_overrides) if llm_overrides else self.client
+            json_mode = bool(config.get("json_mode", True))
+            rf = {"type": "json_object"} if json_mode else None
+            try:
+                response = await client.chat_with_images(
+                    system_prompt=system_prompt,
+                    user_prompt=user_prompt,
+                    image_data_urls=data_urls,
+                    temperature=float(config.get("temperature", 0.3)),
+                    response_format=rf,
+                )
+            except LLMError as _e:
+                if rf is not None and _looks_unsupported_response_format(_e):
+                    logger.warning("model rejected response_format, retrying without: %s", _e)
+                    response = await client.chat_with_images(
+                        system_prompt=system_prompt,
+                        user_prompt=user_prompt,
+                        image_data_urls=data_urls,
+                        temperature=float(config.get("temperature", 0.3)),
+                        response_format=None,
+                    )
+                else:
+                    raise
+            parsed = _parse_llm_response(response.get("content", ""), media_type_hint=media_type)
             parsed["media_type"] = parsed.get("media_type") or media_type
             parsed["_input"] = {
                 "filename": filename,
@@ -563,9 +945,11 @@ class MultimodalLLMEngine(BaseEngine):
         start = time.monotonic()
         system_prompt = config.get("prompt") or DEFAULT_SYSTEM_PROMPT
         user_prompt_template = config.get("user_prompt") or DEFAULT_USER_PROMPT
-        n_frames = int(config.get("extract_frames", 3))
-        if n_frames < 1: n_frames = 1
-        if n_frames > 8: n_frames = 8
+        frame_fps = float(config.get("frame_fps", 2.0) or 2.0)
+        max_frames = int(config.get("max_frames", 16) or 16)
+        max_frames = max(1, min(32, max_frames))
+        n_frames = max(1, min(8, int(config.get("extract_frames", 3) or 3)))
+        image_max_edge = int(config.get("image_max_long_edge", 1536) or 1536)
 
         # 在 user_prompt 里明确告诉 LLM 这是联合分析
         if len(files) > 1:
@@ -583,13 +967,17 @@ class MultimodalLLMEngine(BaseEngine):
                 mime = f.get("mime")
 
                 if _is_video(filename, mime):
-                    frames = _extract_video_frames(file_bytes, filename, n_frames=n_frames)
+                    frames = _extract_video_frames(
+                        file_bytes, filename,
+                        n_frames=n_frames, frame_fps=frame_fps, max_frames=max_frames,
+                    )
                     if frames:
                         for fr in frames:
                             all_data_urls.append(_encode_data_url(fr, "image/jpeg"))
                 elif _is_image(filename, mime):
                     img_mime = mime if (mime and mime.lower().startswith("image/")) else _guess_image_mime(filename)
-                    all_data_urls.append(_encode_data_url(file_bytes, img_mime))
+                    ib, im = _resize_image_bytes(file_bytes, img_mime, max_long_edge=image_max_edge)
+                    all_data_urls.append(_encode_data_url(ib, im))
                 else:
                     all_data_urls.append(_encode_data_url(file_bytes, "image/jpeg"))
 
@@ -615,7 +1003,7 @@ class MultimodalLLMEngine(BaseEngine):
             # per-call LLM client
             from app.engines.multimodal_llm import _build_llm_overrides
             llm_overrides = _build_llm_overrides(config)
-            client = LLMClient(self.settings, overrides=llm_overrides) if llm_overrides else self.client
+            client = get_shared_llm_client(self.settings, overrides=llm_overrides) if llm_overrides else self.client
             if client.mock_mode:
                 return RecognitionResult(
                     success=True,
@@ -633,13 +1021,29 @@ class MultimodalLLMEngine(BaseEngine):
             if meta_str:
                 user_prompt = f"{user_prompt}\n\n{len(files)} 个文件: {meta_str}"
 
-            response = await client.chat_with_images(
-                system_prompt=system_prompt,
-                user_prompt=user_prompt,
-                image_data_urls=all_data_urls,
-                temperature=float(config.get("temperature", 0.3)),
-            )
-            parsed = _parse_llm_response(response.get("content", ""))
+            json_mode = bool(config.get("json_mode", True))
+            rf = {"type": "json_object"} if json_mode else None
+            try:
+                response = await client.chat_with_images(
+                    system_prompt=system_prompt,
+                    user_prompt=user_prompt,
+                    image_data_urls=all_data_urls,
+                    temperature=float(config.get("temperature", 0.3)),
+                    response_format=rf,
+                )
+            except LLMError as _e:
+                if rf is not None and _looks_unsupported_response_format(_e):
+                    logger.warning("batch: model rejected response_format, retrying without: %s", _e)
+                    response = await client.chat_with_images(
+                        system_prompt=system_prompt,
+                        user_prompt=user_prompt,
+                        image_data_urls=all_data_urls,
+                        temperature=float(config.get("temperature", 0.3)),
+                        response_format=None,
+                    )
+                else:
+                    raise
+            parsed = _parse_llm_response(response.get("content", ""), media_type_hint="batch")
             parsed["media_type"] = "batch"
             parsed["batch_size"] = len(files)
             parsed["files"] = per_file_meta
@@ -684,7 +1088,7 @@ class MultimodalLLMEngine(BaseEngine):
         """
         import time
         overrides = _build_llm_overrides(config)
-        client = LLMClient(self.settings, overrides=overrides) if overrides else self.client
+        client = get_shared_llm_client(self.settings, overrides=overrides) if overrides else self.client
         # mock 模式: 走 mock 路径也能算"通"
         if client.mock_mode:
             return {"ok": True, "message": "mock 模式 (未发起真实调用)", "duration_ms": 0}
@@ -714,4 +1118,6 @@ class MultimodalLLMEngine(BaseEngine):
             }
 
     async def aclose(self) -> None:
-        await self.client.close()
+        # Engine instances are cached/shared (see factory.get_engine). Do NOT
+        # close the shared LLM client here; it would break connection reuse.
+        pass

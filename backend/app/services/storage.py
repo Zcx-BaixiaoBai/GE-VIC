@@ -72,3 +72,35 @@ class StorageService:
         finally:
             response.close()
             response.release_conn()
+
+    def upload_from_path(
+        self,
+        file_path: str,
+        filename: str,
+        record_id: int,
+        content_type: str = "application/octet-stream",
+    ) -> str:
+        """Upload a file from its path (MinIO streams it via multipart); return object_key."""
+        now = datetime.now(timezone.utc)
+        object_key = (
+            f"inspections/{now.year:04d}/{now.month:02d}/{now.day:02d}/"
+            f"{record_id}/{filename}"
+        )
+        self.client.fput_object(
+            bucket_name=self.bucket,
+            object_name=object_key,
+            file_path=file_path,
+            content_type=content_type,
+        )
+        return object_key
+
+    def download_to_file(self, object_key: str, dest_path: str) -> None:
+        """Stream an object to a local file (avoids loading it all into memory)."""
+        response = self.client.get_object(self.bucket, object_key)
+        try:
+            with open(dest_path, "wb") as f:
+                for chunk in response.stream(1024 * 1024):
+                    f.write(chunk)
+        finally:
+            response.close()
+            response.release_conn()

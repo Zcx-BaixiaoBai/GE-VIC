@@ -17,6 +17,7 @@
 进入识别流程 (与原 POST /inspect/{code} 等价, 但文件已上传完)。
 """
 import base64
+import asyncio
 import logging
 import os
 import re
@@ -206,8 +207,7 @@ async def patch_upload(
 
     # 追加写 (异步, 大文件场景用 aiofiles 更佳, 这里先同步)
     tmp_path = Path(sess.tmp_path)
-    with tmp_path.open("ab") as f:
-        f.write(body)
+    await asyncio.to_thread(_append_bytes, tmp_path, body)
 
     sess.offset = new_offset
     if new_offset == sess.total_size:
@@ -261,6 +261,12 @@ def _new_id() -> str:
     return _u.uuid4().hex
 
 
+def _append_bytes(path: Path, data: bytes) -> None:
+    """Append a chunk to the temp file (runs in a thread to avoid blocking the loop)."""
+    with path.open("ab") as f:
+        f.write(data)
+
+
 def _guess_file_type(filename: str) -> str:
     ext = filename.rsplit(".", 1)[-1].lower() if "." in filename else ""
     if ext in {"jpg", "jpeg", "png", "bmp", "webp", "gif", "heic"}:
@@ -283,8 +289,7 @@ async def _write_chunk(session_id: str, body: bytes, expected_offset: int) -> bo
         sess = await _get_session(session, session_id)
         if sess is None or sess.offset != expected_offset:
             return False
-        with Path(sess.tmp_path).open("ab") as f:
-            f.write(body)
+        await asyncio.to_thread(_append_bytes, Path(sess.tmp_path), body)
         sess.offset = expected_offset + len(body)
         if sess.offset == sess.total_size:
             sess.status = "completed"

@@ -261,8 +261,9 @@ interface QueuedFile extends UploadFile {
 }
 const fileList = ref<QueuedFile[]>([])
 const uploading = ref(false)
-// (M2 上传相关)
-const TUS_THRESHOLD = 5 * 1024 * 1024
+// M2 上传相关: ≥1MB 走 TUS, 给图片和视频都有真实的 XHR 进度反馈
+// 压缩后的图片大小 ~500KB-1MB, 1MB 阈值可以保证压缩后也走 TUS
+const TUS_THRESHOLD = 1 * 1024 * 1024
 const lastResult = ref<{ record_id: number; status: string; status_url: string } | null>(null)
 const batchResults = ref<{ record_id: number; status: string; file: string }[]>([])
 const loadingAlgos = ref(false)
@@ -332,10 +333,7 @@ async function onSubmit() {
   if (!form.algorithmCode) return ElMessage.warning('请选择算法')
   const pending = fileList.value.filter((f) => !!f.raw && f._status !== 'success')
   if (pending.length === 0) return ElMessage.warning('请选择文件')
-  if (pending.length > 1 && uploadMode.value === 'independent') {
-    ElMessage.warning('独立模式下请单次提交 1 个文件 (多文件请切换到联合模式)')
-    return
-  }
+  // 独立模式现已支持多文件并行上传, 每个文件生成一条记录
   if (form.inspectorId) localStorage.setItem('inspector_id', form.inspectorId)
   uploading.value = true
   batchResults.value = []
@@ -343,31 +341,39 @@ async function onSubmit() {
   let failCount = 0
   // 联合分析模式 + 多文件: 一次调用 batch 端点, 一条记录
   if (uploadMode.value === 'joint' && pending.length > 1) {
-    const firstFile = pending[0]
-    firstFile._status = 'uploading'
-    firstFile._error = undefined
+    // 联合模式下, 所有文件都立即标记为 "上传中", 避免多图只能看到第一个在跑
+    for (const f of pending) {
+      f._status = 'uploading'
+      f._progress = 0
+      f._speedLabel = '联合上传中...'
+      f._error = undefined
+    }
     try {
       const meta: Record<string, any> = {
-        filename: firstFile.name,
+        filename: pending[0].name,
         is_batch: true,
       }
       if (form.assetId) meta.asset_id = form.assetId
       if (form.inspectorId) meta.inspector_id_hint = form.inspectorId
       const files = pending.map((f) => f.raw as File)
       const r: any = await store.uploadBatch(form.algorithmCode, files, meta)
-      firstFile._status = 'success'
-      firstFile._recordId = r.record_id
-      // 其余文件标记为已合入批次
-      for (let i = 1; i < pending.length; i++) {
-        pending[i]._status = 'success'
-        pending[i]._recordId = r.record_id
+      // 所有文件都标记为成功, batch 只生成一条记录
+      for (const f of pending) {
+        f._status = 'success'
+        f._recordId = r.record_id
+        f._progress = 1
+        f._speedLabel = '完成'
       }
       batchResults.value.push({ record_id: r.record_id, status: r.status, file: `${pending.length} 个文件 (联合分析)` })
       successCount = pending.length
       ElMessage.success(`联合分析已提交 · 记录 #${r.record_id} · 包含 ${pending.length} 个文件`)
     } catch (e: any) {
-      firstFile._status = 'failed'
-      firstFile._error = e?.response?.data?.detail?.message || e?.message || '上传失败'
+      const errMsg = e?.response?.data?.detail?.message || e?.message || '上传失败'
+      for (const f of pending) {
+        f._status = 'failed'
+        f._error = errMsg
+        f._speedLabel = '失败'
+      }
       // 联合分析失败时, 回退到独立模式逐个上传
       ElMessage.warning('联合分析失败, 自动回退为独立模式逐个上传')
       uploading.value = false
@@ -382,99 +388,35 @@ async function onSubmit() {
 
 async function onSubmitIndependent(pending: QueuedFile[]) {
   uploading.value = true
+
+  // 提交前先把所有待上传文件的状态刷成 "上传中", UI 上每个文件都立刻有进度反馈
+  for (const f of pending) {
+    f._error = undefined
+    f._progress = 0
+    f._origSize = f.size || 0
+    f._status = 'uploading'
+    f._speedLabel = '等待上传...'
+  }
+
+  // 并行上传: 每个文件独立压缩 / TUS / 直接 multipart, 互不阻塞
+  // 单个文件失败不会拖垮其他文件
+  const results = await Promise.allSettled(pending.map((f) => uploadOneIndependent(f)))
+
   let successCount = 0
   let failCount = 0
-  for (const f of pending) {
-    try {
-      f._error = undefined
-      f._progress = 0
-      f._origSize = f.size || 0
-      let fileToUpload = f.raw as File
-      if ((f.raw?.type || '').startsWith('image/')) {
-        f._status = 'compressing'
-        f._speedLabel = '上传中…'
-        const c = await compressImage(f.raw as File, {
-          onProgress: ({ stage }) => {
-            f._speedLabel = stage === 'loading' ? '加载中…' : (stage === 'compressing' ? '压缩中…' : (stage === 'skipped' ? '已跳过' : '完成'))
-          },
-        })
-        fileToUpload = c.file
-        f._finalSize = c.compressedSize
-        if (c.compressed) {
-          ElMessage.info(`图片已压缩: ${formatSize(c.originalSize)} → ${formatSize(c.compressedSize)}`)
-        }
-      }
-
-      const meta: Record<string, any> = { filename: f.name }
-      if (form.assetId) meta.asset_id = form.assetId
-      if (form.inspectorId) meta.inspector_id_hint = form.inspectorId
-      if (fileToUpload.size >= TUS_THRESHOLD) {
-        f._status = 'uploading'
-        f._speedLabel = '上传中…'
-        const tusMeta = {
-          algorithm_code: form.algorithmCode,
-          inspector_id: form.inspectorId || 'WEB-DEMO-USER',
-          asset_id: form.assetId || '',
-        }
-        const { sessionId } = await tusUpload(fileToUpload, {
-          endpoint: `${window.location.origin}/api/v1/uploads`,
-          metadata: tusMeta,
-          onProgress: (frac) => {
-            // eslint-disable-next-line no-console
-            console.debug('[TUS progress]', (frac * 100).toFixed(1) + '%')
-            f._progress = frac
-            const pct = Math.max(0, Math.min(100, Math.round((frac || 0) * 100)))
-            f._speedLabel = `上传中 ${pct}%`
-          },
-          onStatus: (st) => {
-            f._speedLabel = st === 'resuming' ? '断点续传…' : st
-          },
-        })
-        f._speedLabel = '建立记录…'
-        const r: { record_id: number; status: string; status_url: string } = await store.finalizeFromTus(form.algorithmCode, sessionId, meta)
-        f._status = 'success'
-        f._recordId = r.record_id
-        f._progress = 1
-        f._speedLabel = '完成'
-      } else {
-        f._status = 'uploading'
-        f._speedLabel = '上传中…'
-        // 200ms 轮询兜底, 即使 onUploadProgress 不触发, bar 也会缓慢前进
-        const pollTimer = setInterval(() => {
-          if (f._status !== 'uploading') return
-          if (f._progress < 0.95) {
-            f._progress = Math.min(0.95, (f._progress || 0) + 0.02)
-            const pct = Math.round(f._progress * 100)
-            f._speedLabel = `上传中 ${pct}%`
-          }
-        }, 200)
-        try {
-          const r: { record_id: number; status: string; status_url: string } = await store.uploadFile(form.algorithmCode, fileToUpload, meta, (e) => {
-            // eslint-disable-next-line no-console
-            console.debug('[direct upload progress]', e.loaded, '/', e.total, 'lengthComputable=', e.lengthComputable)
-            if (e.lengthComputable && e.total) {
-              f._progress = e.loaded / e.total
-              const pct = Math.max(0, Math.min(100, Math.round(f._progress * 100)))
-              f._speedLabel = `上传中 ${pct}% · ${formatSize(e.loaded)} / ${formatSize(e.total)}`
-            } else {
-              f._speedLabel = `上传中… (${formatSize(e.loaded)})`
-            }
-          })
-          f._status = 'success'
-          f._recordId = r.record_id
-          f._progress = 1
-          f._speedLabel = '完成'
-        } finally {
-          clearInterval(pollTimer)
-        }
-      }
-      batchResults.value.push({ record_id: f._recordId!, status: 'PENDING', file: f.name })
+  for (let i = 0; i < pending.length; i++) {
+    const r = results[i]
+    const f = pending[i]
+    if (r.status === 'fulfilled') {
       successCount++
-    } catch (e: any) {
-      f._status = 'failed'
-      f._error = e?.response?.data?.detail?.message || e?.message || '上传中…'
-      f._speedLabel = '失败'
+    } else {
       failCount++
+      const e: any = r.reason
+      if (f._status !== 'failed') {
+        f._status = 'failed'
+        f._error = e?.response?.data?.detail?.message || e?.message || '上传失败'
+        f._speedLabel = '失败'
+      }
     }
   }
   uploading.value = false
@@ -486,6 +428,91 @@ async function onSubmitIndependent(pending: QueuedFile[]) {
     ElMessage.error(`全部 ${failCount} 个文件上传失败`)
   }
 }
+
+/** 单个文件上传: 压缩 -> 按大小走 TUS 或 multipart, 抛错由 Promise.allSettled 兜底 */
+async function uploadOneIndependent(f: QueuedFile) {
+  let fileToUpload = f.raw as File
+  if ((f.raw?.type || '').startsWith('image/')) {
+    f._status = 'compressing'
+    f._speedLabel = '压缩中...'
+    const c = await compressImage(f.raw as File, {
+      onProgress: ({ stage }) => {
+        f._speedLabel = stage === 'loading' ? '加载中...' : (stage === 'compressing' ? '压缩中...' : (stage === 'skipped' ? '已跳过' : '完成'))
+      },
+    })
+    fileToUpload = c.file
+    f._finalSize = c.compressedSize
+    if (c.compressed) {
+      ElMessage.info(`图片已压缩: ${formatSize(c.originalSize)} → ${formatSize(c.compressedSize)}`)
+    }
+  }
+
+  const meta: Record<string, any> = { filename: f.name }
+  if (form.assetId) meta.asset_id = form.assetId
+  if (form.inspectorId) meta.inspector_id_hint = form.inspectorId
+
+  if (fileToUpload.size >= TUS_THRESHOLD) {
+    f._status = 'uploading'
+    f._speedLabel = '上传中...'
+    const tusMeta = {
+      algorithm_code: form.algorithmCode,
+      inspector_id: form.inspectorId || 'WEB-DEMO-USER',
+      asset_id: form.assetId || '',
+    }
+    const { sessionId } = await tusUpload(fileToUpload, {
+      endpoint: `${window.location.origin}/api/v1/uploads`,
+      metadata: tusMeta,
+      onProgress: (frac) => {
+        f._progress = frac
+        const pct = Math.max(0, Math.min(100, Math.round((frac || 0) * 100)))
+        f._speedLabel = `上传中 ${pct}%`
+      },
+      onStatus: (st) => {
+        if (st === 'resuming') f._speedLabel = '断点续传...'
+      },
+    })
+    f._speedLabel = '建立记录...'
+    const r: { record_id: number; status: string; status_url: string } = await store.finalizeFromTus(form.algorithmCode, sessionId, meta)
+    f._status = 'success'
+    f._recordId = r.record_id
+    f._progress = 1
+    f._speedLabel = '完成'
+    batchResults.value.push({ record_id: r.record_id, status: 'PENDING', file: f.name })
+    return r
+  }
+
+  f._status = 'uploading'
+  f._speedLabel = '上传中...'
+  // 200ms 轮询兜底, 即便浏览器没触发 onUploadProgress, bar 也会缓慢前进
+  const pollTimer = setInterval(() => {
+    if (f._status !== 'uploading') return
+    if ((f._progress || 0) < 0.95) {
+      f._progress = Math.min(0.95, (f._progress || 0) + 0.02)
+      const pct = Math.round((f._progress || 0) * 100)
+      f._speedLabel = `上传中 ${pct}%`
+    }
+  }, 200)
+  try {
+    const r: { record_id: number; status: string; status_url: string } = await store.uploadFile(form.algorithmCode, fileToUpload, meta, (e) => {
+      if (e.lengthComputable && e.total) {
+        f._progress = e.loaded / e.total
+        const pct = Math.max(0, Math.min(100, Math.round(f._progress * 100)))
+        f._speedLabel = `上传中 ${pct}% · ${formatSize(e.loaded)} / ${formatSize(e.total)}`
+      } else {
+        f._speedLabel = `上传中... (${formatSize(e.loaded)})`
+      }
+    })
+    f._status = 'success'
+    f._recordId = r.record_id
+    f._progress = 1
+    f._speedLabel = '完成'
+    batchResults.value.push({ record_id: r.record_id, status: 'PENDING', file: f.name })
+    return r
+  } finally {
+    clearInterval(pollTimer)
+  }
+}
+
 function goDashboard() { router.push('/') }
 </script>
 

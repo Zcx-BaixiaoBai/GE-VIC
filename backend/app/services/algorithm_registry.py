@@ -47,6 +47,7 @@ class AlgorithmRegistry:
             self._cache.pop(algo.code, None)
         else:
             self._cache[algo.code] = algo
+        _bust_llm_client_cache()  # algorithm config may have changed -> drop cached LLM clients
 
     def remove(self, code: str) -> None:
         """从缓存移除"""
@@ -123,3 +124,12 @@ def to_dict(algo: Algorithm) -> dict[str, Any]:
         "engine_config": safe_config,
         "request_schema": algo.request_schema,
     }
+
+
+def _bust_llm_client_cache() -> None:
+    """Invalidate cached LLM clients (called when algorithm configs change)."""
+    try:
+        from app.services.llm_client import invalidate_llm_client_cache
+        invalidate_llm_client_cache()
+    except Exception:
+        pass

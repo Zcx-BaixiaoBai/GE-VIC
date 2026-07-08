@@ -439,20 +439,27 @@ async def inspect_from_upload(
             detail={"code": "UPLOAD_FILE_MISSING", "message": "Temp file missing or size mismatch"},
         )
 
-    file_bytes = tmp.read_bytes()
     filename = upload_sess.filename or "upload.bin"
     file_type = upload_sess.file_type or "other"
     content_type = upload_sess.content_type or "application/octet-stream"
 
+    file_size = tmp.stat().st_size
     if file_type == "video":
         max_size = settings.max_video_size
     else:
         max_size = settings.max_image_size
-    if len(file_bytes) > max_size:
+    if file_size > max_size:
         raise HTTPException(
             status_code=413,
             detail={"code": "FILE_TOO_LARGE", "message": f"File exceeds max size for {file_type} ({max_size // (1024*1024)} MB)"},
         )
+
+    # stream-hash to avoid loading the whole file into memory
+    _h = hashlib.sha256()
+    with tmp.open("rb") as _fh:
+        for _chunk in iter(lambda: _fh.read(1024 * 1024), b""):
+            _h.update(_chunk)
+    file_hash = _h.hexdigest()
 
     inspection = Inspection(
         algorithm_code=algorithm_code,
@@ -468,9 +475,9 @@ async def inspect_from_upload(
             "file_type": file_type,
             "upload_session_id": session_id,
         },
-        file_size=len(file_bytes),
+        file_size=file_size,
         file_type=file_type,
-        file_hash=hashlib.sha256(file_bytes).hexdigest(),
+        file_hash=file_hash,
         retry_count=0,
     )
     session.add(inspection)
@@ -479,8 +486,8 @@ async def inspect_from_upload(
 
     storage = StorageService.from_settings(settings)
     try:
-        object_key = storage.upload_file(
-            file_bytes=file_bytes,
+        object_key = storage.upload_from_path(
+            str(tmp),
             filename=filename,
             record_id=record_id,
             content_type=content_type,

@@ -159,6 +159,26 @@
       </div>
 
       <!-- ========== LLM 富化 ========== -->
+      <!-- ========== 未检出内容 ========== -->
+      <div v-if="isMultimodalResult && undetectedObservations.length" class="rd-section rd-undetected">
+        <div class="rd-section-header">
+          <h3>
+            <el-icon><CircleCheck /></el-icon>
+            未检出内容
+          </h3>
+          <span class="rd-section-hint">{{ undetectedObservations.length }} 项 · 无异常</span>
+        </div>
+        <div class="rd-undetected-list">
+          <div v-for="(o, i) in undetectedObservations" :key="'u' + i" class="rd-undetected-item">
+            <el-icon class="rd-undetected-ico"><CircleCheck /></el-icon>
+            <div class="rd-undetected-body">
+              <strong>{{ o.label }}</strong>
+              <span v-if="o.note" class="rd-undetected-note">{{ o.note }}</span>
+            </div>
+          </div>
+        </div>
+      </div>
+
       <div v-if="record.llm_enrichment?.summary" class="rd-section">
         <div class="rd-section-header">
           <h3>
@@ -260,7 +280,7 @@ import StatusTag from './StatusTag.vue'
 import { recordsApi, type Inspection } from '../api/client'
 import { ElMessage } from 'element-plus'
 import {
-  InfoFilled, Document, DataLine, Tools, MagicStick, Setting,
+  InfoFilled, Document, DataLine, Tools, MagicStick, Setting, CircleCheck,
 } from '@element-plus/icons-vue'
 
 const props = defineProps<{
@@ -317,25 +337,33 @@ const statusType = computed(() => {
   return 'info'
 })
 
+// findings = real observations; 未检出/正常 no-findings go to a separate
+// section and must NOT contribute to the alarm / risk-dot / riskCount.
+const findings = computed(() =>
+  (props.record?.recognition?.observations || []).filter((o: any) => !o.is_negative)
+)
+
+const undetectedObservations = computed(() =>
+  (props.record?.recognition?.observations || []).filter((o: any) => o.is_negative === true)
+)
+
 const maxRiskClass = computed(() => {
-  const obs = props.record?.recognition?.observations || []
-  for (const o of obs) {
+  for (const o of findings.value) {
     if (riskClass(o.risk) === 'high') return 'high'
   }
-  for (const o of obs) {
+  for (const o of findings.value) {
     if (riskClass(o.risk) === 'medium') return 'medium'
   }
   return 'low'
 })
 
 const sortedObservations = computed(() => {
-  const obs = [...(props.record?.recognition?.observations || [])]
   const order: Record<string, number> = { high: 0, medium: 1, low: 2, unknown: 3 }
-  return obs.sort((a, b) => (order[riskClass(a.risk)] ?? 4) - (order[riskClass(b.risk)] ?? 4))
+  return [...findings.value].sort((a, b) => (order[riskClass(a.risk)] ?? 4) - (order[riskClass(b.risk)] ?? 4))
 })
 
 function riskCount(level: 'high' | 'medium' | 'low'): number {
-  return (props.record?.recognition?.observations || []).filter((o: any) => riskClass(o.risk) === level).length
+  return findings.value.filter((o: any) => riskClass(o.risk) === level).length
 }
 
 function riskClass(r: any): 'high' | 'medium' | 'low' | 'unknown' {
@@ -406,6 +434,13 @@ async function onEnrich() {
 
 <style scoped>
 .rd-root { padding: 0 4px; }
+.rd-undetected { background: #f0f9eb; border: 1px solid #e1f3d8; border-radius: 10px; padding: 14px 16px; margin-bottom: 16px; }
+.rd-undetected .rd-section-header { margin-bottom: 10px; }
+.rd-undetected-list { display: flex; flex-direction: column; gap: 8px; }
+.rd-undetected-item { display: flex; gap: 10px; align-items: flex-start; }
+.rd-undetected-ico { color: #67c23a; flex-shrink: 0; margin-top: 2px; }
+.rd-undetected-body { display: flex; flex-direction: column; gap: 2px; }
+.rd-undetected-note { color: #5f7a4a; font-size: 13px; }
 
 /* 顶部摘要卡片 */
 .rd-header { border: none; background: linear-gradient(135deg, #f5f7fa 0%, #e8eef5 100%); margin-bottom: 16px; }

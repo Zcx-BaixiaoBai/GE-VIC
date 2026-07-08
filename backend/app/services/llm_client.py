@@ -246,6 +246,7 @@ class LLMClient:
         except (TypeError, ValueError):
             self._timeout = 30.0
         self._mock_call_count = 0
+        self._shared: bool = False  # shared clients skip close()
         if not self.mock_mode:
             self.client = AsyncOpenAI(
                 api_key=self._api_key,
@@ -315,6 +316,7 @@ class LLMClient:
         user_prompt: str,
         image_data_urls: list[str],
         temperature: float = 0.3,
+        response_format: dict[str, str] | None = None,
     ) -> dict[str, Any]:
         """多模态 chat: 同时发送文本 + 多张图片 (OpenAI image_url 格式)
 
@@ -348,6 +350,7 @@ class LLMClient:
                 ],
                 temperature=temperature,
                 max_tokens=int(rt_get("llm_max_output_tokens", self._max_output_tokens)),
+                **({"response_format": response_format} if response_format is not None else {}),  # type: ignore[arg-type]
             )
             content = response.choices[0].message.content or ""
             usage = response.usage
@@ -410,5 +413,58 @@ class LLMClient:
         }
 
     async def close(self) -> None:
+        if self._shared:
+            return  # shared clients are managed by the cache; do not close
         if self.client is not None:
             await self.client.close()
+
+
+# ---- shared (cached) LLM clients for connection-pool reuse ----
+_CLIENT_CACHE: dict[str, LLMClient] = {}
+_CLIENT_CACHE_MAX = 32
+
+
+def _client_cache_key(settings: Settings, overrides: dict[str, Any] | None) -> str:
+    import hashlib
+    ov = overrides or {}
+    base_url = (str(ov.get("base_url")).strip() if ov.get("base_url") else "") or settings.llm_base_url
+    model = (str(ov.get("model")).strip() if ov.get("model") else "") or settings.llm_model
+    api_key = (str(ov.get("api_key")).strip() if ov.get("api_key") else "") or settings.llm_api_key
+    try:
+        timeout = float(ov.get("timeout", 30.0))
+    except (TypeError, ValueError):
+        timeout = 30.0
+    try:
+        mo = int(ov.get("max_output_tokens", settings.llm_max_output_tokens))
+    except (TypeError, ValueError):
+        mo = settings.llm_max_output_tokens
+    try:
+        mi = int(ov.get("max_input_tokens", settings.llm_max_input_tokens) or settings.llm_max_input_tokens)
+    except (TypeError, ValueError):
+        mi = settings.llm_max_input_tokens
+    mock = bool(ov.get("mock_mode", settings.llm_mock_mode))
+    raw = f"{base_url}|{model}|{hashlib.sha256(api_key.encode()).hexdigest()[:16]}|{mo}|{mi}|{timeout}|{mock}"
+    return hashlib.sha1(raw.encode()).hexdigest()
+
+
+def get_shared_llm_client(settings: Settings, overrides: dict[str, Any] | None = None) -> LLMClient:
+    """Return a process-wide cached LLMClient for the given config.
+
+    Reuses the underlying AsyncOpenAI/httpx connection pool across tasks and
+    engine calls instead of creating a new one each time. Callers must NOT
+    close() the returned client.
+    """
+    key = _client_cache_key(settings, overrides)
+    c = _CLIENT_CACHE.get(key)
+    if c is None:
+        c = LLMClient(settings, overrides=overrides)
+        c._shared = True
+        if len(_CLIENT_CACHE) >= _CLIENT_CACHE_MAX:
+            _CLIENT_CACHE.pop(next(iter(_CLIENT_CACHE)))
+        _CLIENT_CACHE[key] = c
+    return c
+
+
+def invalidate_llm_client_cache() -> None:
+    """Drop all cached LLM clients (e.g. when algorithm configs change)."""
+    _CLIENT_CACHE.clear()

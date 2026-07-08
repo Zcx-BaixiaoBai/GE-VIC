@@ -12,6 +12,9 @@ _ENGINE_REGISTRY: dict[str, type[BaseEngine]] = {
     "multimodal_llm": MultimodalLLMEngine,
 }
 
+# cached default-constructed instances (reuse LLM/httpx connection pools)
+_ENGINE_INSTANCES: dict[str, BaseEngine] = {}
+
 
 def get_engine(engine_type: str, **kwargs: Any) -> BaseEngine:
     """根据 engine_type 创建引擎实例.
@@ -25,11 +28,22 @@ def get_engine(engine_type: str, **kwargs: Any) -> BaseEngine:
             f"Available: {list(_ENGINE_REGISTRY.keys())}"
         )
 
+    custom = bool(kwargs)  # caller supplied custom construction kwargs
     if cls is MultimodalLLMEngine and "settings" not in kwargs:
         from app.config import get_settings
         kwargs["settings"] = get_settings()
 
-    return cls(**kwargs)
+    # cache default-constructed instances so LLM/httpx connection pools are
+    # reused across tasks; custom-kwargs calls return fresh instances.
+    if not custom:
+        cached = _ENGINE_INSTANCES.get(engine_type)
+        if cached is not None and type(cached) is cls:
+            return cached
+
+    inst = cls(**kwargs)
+    if not custom:
+        _ENGINE_INSTANCES[engine_type] = inst
+    return inst
 
 
 def register_engine(engine_type: str, cls: type[BaseEngine]) -> None:

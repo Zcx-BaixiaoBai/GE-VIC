@@ -14,7 +14,7 @@
  *   - DELETE /uploads/{id} -> 204
  */
 const TUS_VERSION = '1.0.0'
-const DEFAULT_CHUNK_SIZE = 5 * 1024 * 1024 // 5MB
+const DEFAULT_CHUNK_SIZE = 8 * 1024 * 1024 // 8MB (larger chunks = fewer requests, better for high-latency links like cpolar)
 const STORAGE_PREFIX = 'gevic-tus-'
 const MAX_RETRIES = 5
 

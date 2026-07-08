@@ -20,6 +20,8 @@ dependencies = [
     "tenacity>=8.2.3",
     "structlog>=24.1.0",
     "prometheus-client>=0.20.0",
+    "imageio-ffmpeg>=0.4.7",
+    "pillow>=10.0.0",
 ]
 
 [project.optional-dependencies]

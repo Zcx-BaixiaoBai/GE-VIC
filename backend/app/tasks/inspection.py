@@ -2,6 +2,7 @@
 import asyncio
 import logging
 from datetime import datetime, timezone
+from functools import lru_cache
 
 from celery import shared_task
 from sqlalchemy import select
@@ -45,8 +46,12 @@ def _get_engine_type_sync(algorithm_code: str) -> str:
         return "unknown"
 
 
+@lru_cache(maxsize=1)
 def _make_task_sessionmaker():
     """Create a dedicated sessionmaker for task execution (separate engine from API)"""
+
+    # Cached at module level so the asyncpg connection pool is reused across
+    # Celery tasks instead of being recreated per task.
     return get_sessionmaker(create_engine(get_settings().database_url, pool_size=2))
 
 
@@ -210,12 +215,12 @@ async def _run_inspection_async(record_id: int) -> dict:
 
 async def _run_enrichment_async(record_id: int) -> dict:
     """Core enrichment logic (async)"""
-    from app.services.llm_client import LLMClient
+    from app.services.llm_client import get_shared_llm_client
     from app.services.enrichment import EnrichmentService
 
     settings = get_settings()
     sm = _make_task_sessionmaker()
-    llm = LLMClient(settings)
+    llm = get_shared_llm_client(settings)
     try:
         async with sm() as session:
             stmt = select(Inspection).where(Inspection.id == record_id)
@@ -257,7 +262,7 @@ async def _run_enrichment_async(record_id: int) -> dict:
             await session.commit()
             return {"status": "done", "record_id": record_id, "enrichment_status": inspection.enrichment_status}
     finally:
-        await llm.close()
+        pass  # shared LLM client is reused across tasks; do not close
 
 
 @shared_task(
