@@ -79,3 +79,14 @@ scripts/*.py
 # TUS 断点续传临时文件
 upload-tmp/
 backend/upload-tmp/
+
+# MinIO server binary (downloaded on first use, ~108MB, not versioned)
+minio/
+
+# Codex app-local scratch / temp placeholders
+.codex/
+.codex-explore-tmp.txt
+.codex-skill-read-placeholder
+.skill-read-placeholder
+.tmp_skill_read.txt
+unused

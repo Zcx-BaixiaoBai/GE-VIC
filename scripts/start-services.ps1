@@ -1,4 +1,4 @@
-﻿# 启动本地依赖服务 (PostgreSQL from pgserver + Redis 3.2 + moto S3)
+# 启动本地依赖服务 (PostgreSQL from pgserver + Redis 3.2 + 真实 MinIO 持久化)
 
 $root = Split-Path $PSScriptRoot -Parent
 $pgBin = "$root\backend\.venv\Lib\site-packages\pgserver\pginstall\bin"
@@ -29,20 +29,32 @@ if (Test-Path $redisExe) {
     Write-Host "  Redis not found at $redisExe. Please install." -ForegroundColor Red
 }
 
-# 3. MinIO (moto S3 stand-in)
+# 3. MinIO (真实 server, 持久化到 ./minio-data; 取代内存版 moto)
 $pyExe = "$root\backend\.venv\Scripts\python.exe"
-if (Test-Path $pyExe) {
-    $motoPort = (netstat -ano 2>$null | Select-String -Pattern "LISTENING" | Select-String -Pattern ":9000")
-    if (-not $motoPort) {
-        Start-Process -FilePath $pyExe `
-            -ArgumentList "-m","moto.server","-p","9000","-H","127.0.0.1" `
-            -WorkingDirectory "$root\backend" `
+$minioExe = "$root\minio\minio.exe"
+$minioData = "$root\minio-data"
+if (Test-Path $minioExe) {
+    $minioPort = (netstat -ano 2>$null | Select-String -Pattern "LISTENING" | Select-String -Pattern ":9000")
+    if (-not $minioPort) {
+        if (-not (Test-Path $minioData)) { New-Item -ItemType Directory -Path $minioData | Out-Null }
+        $env:MINIO_ROOT_USER = "gevic_admin"
+        $env:MINIO_ROOT_PASSWORD = "gevic_dev_password"
+        Start-Process -FilePath $minioExe `
+            -ArgumentList "server","$minioData","--address","127.0.0.1:9000","--console-address","127.0.0.1:9001" `
+            -WorkingDirectory "$root" `
             -WindowStyle Hidden `
-            -RedirectStandardOutput "$root\moto.log" `
-            -RedirectStandardError "$root\moto.err"
-        Start-Sleep 2
+            -RedirectStandardOutput "$root\minio.log" `
+            -RedirectStandardError "$root\minio.err"
+        # 等待 MinIO 在 9000 监听 (最多 30s)
+        for ($i = 0; $i -lt 30; $i++) {
+            $p = (netstat -ano 2>$null | Select-String -Pattern "LISTENING" | Select-String -Pattern ":9000")
+            if ($p) { break }
+            Start-Sleep 1
+        }
     }
-    Write-Host "  MinIO/moto: 127.0.0.1:9000"
+    Write-Host "  MinIO: 127.0.0.1:9000 (console :9001, data: $minioData)"
+} else {
+    Write-Host "  MinIO binary not found at $minioExe (expected minio/minio.exe)." -ForegroundColor Red
 }
 
 # 4. Create database & bucket

@@ -71,7 +71,10 @@ docker compose exec backend alembic upgrade head
 ### 一次性安装本地服务
 
 ```powershell
-# 1. 启动 PostgreSQL / Redis / MinIO (pgserver + moto S3 + redis-server)
+# 0. (首次) 下载 MinIO 二进制到 minio/minio.exe (108MB, 不随仓库分发)
+#    Invoke-WebRequest https://dl.min.io/server/minio/release/windows-amd64/minio.exe -OutFile minio\minio.exe
+
+# 1. 启动 PostgreSQL / Redis / MinIO (pgserver + 真实 MinIO 持久化 + redis-server)
 powershell -File scripts\start-services.ps1
 
 # 2. 启动后端 + 前端 (演示模式, 详见下文)
