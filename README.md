@@ -83,6 +83,8 @@ powershell -File scripts\start-app.ps1
 
 ### 本地同步模式 (Windows 无需 Celery worker)
 
+全局 LLM 配置入口: 在 `.env.local` 中设置 `LLM_API_KEY`、`LLM_BASE_URL`、`LLM_MODEL` 等,`start-app.ps1` 启动时会自动加载(`.env.local` 已 gitignore, 不会提交)。
+
 | 环境变量 | 默认 | 说明 |
 |---|---|---|
 | `TASK_SYNC_MODE` | `false` | `true` 时任务在 API 进程内同步执行, 不依赖 Celery worker (Windows 本地开发用) |

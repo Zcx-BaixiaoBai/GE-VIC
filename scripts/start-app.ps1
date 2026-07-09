@@ -1,11 +1,30 @@
 ﻿# GE-VIC M0 一键启动 (本地开发版, 需先 start-services.ps1)
 
 $env:DATABASE_URL = "postgresql+asyncpg://postgres@127.0.0.1:5432/gevic"
-$env:LLM_BASE_URL = "https://dashscope.aliyuncs.com/compatible-mode/v1"
-$env:LLM_API_KEY = "sk-replace-with-your-key"
-$env:LLM_MODEL = "qwen-plus"
-$env:LLM_MAX_INPUT_TOKENS = "4000"
-$env:LLM_MAX_OUTPUT_TOKENS = "1000"
+# 加载 .env.local 作为全局 LLM 入口(可配置真实 key,不污染仓库)
+$envFile = "$PSScriptRoot\..\.env.local"
+if (Test-Path $envFile) {
+    Get-Content $envFile | ForEach-Object {
+        $line = $_.Trim()
+        if ($line -and -not $line.StartsWith("#")) {
+            $kv = $line -split "=", 2
+            if ($kv.Count -eq 2) {
+                $key = $kv[0].Trim()
+                $value = $kv[1].Trim().Trim("'").Trim('"')
+                if ($key -in @("LLM_API_KEY","LLM_BASE_URL","LLM_MODEL","LLM_MAX_INPUT_TOKENS","LLM_MAX_OUTPUT_TOKENS")) {
+                    [Environment]::SetEnvironmentVariable($key, $value, "Process")
+                }
+            }
+        }
+    }
+}
+
+# 全局 LLM 默认值(仅当 .env.local 未提供时使用)
+if (-not $env:LLM_API_KEY) { $env:LLM_API_KEY = "sk-replace-with-your-key" }
+if (-not $env:LLM_BASE_URL) { $env:LLM_BASE_URL = "https://dashscope.aliyuncs.com/compatible-mode/v1" }
+if (-not $env:LLM_MODEL) { $env:LLM_MODEL = "qwen-plus" }
+if (-not $env:LLM_MAX_INPUT_TOKENS) { $env:LLM_MAX_INPUT_TOKENS = "4000" }
+if (-not $env:LLM_MAX_OUTPUT_TOKENS) { $env:LLM_MAX_OUTPUT_TOKENS = "1000" }
 $env:MINIO_ENDPOINT = "127.0.0.1:9000"
 $env:MINIO_ACCESS_KEY = "gevic_admin"
 $env:MINIO_SECRET_KEY = "gevic_dev_password"
