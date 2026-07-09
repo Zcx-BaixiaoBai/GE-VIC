@@ -60,7 +60,6 @@ export interface LLMConfig {
   model: string
   max_input_tokens: number
   max_output_tokens: number
-  mock_mode: boolean
   runtime_max_output_tokens?: number | null
   runtime_max_input_tokens?: number | null
   runtime_overrides?: Record<string, boolean>

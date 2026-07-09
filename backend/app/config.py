@@ -24,8 +24,6 @@ class Settings(BaseSettings):
     llm_model: str
     llm_max_input_tokens: int = 4000
     llm_max_output_tokens: int = 1000
-    # 演示模式: True 时 LLM 返回预设响应, 不调真实 API
-    llm_mock_mode: bool = False
 
     # 对象存储
     minio_endpoint: str = "minio:9000"

@@ -56,8 +56,6 @@ def _build_llm_overrides(config: dict) -> dict:
                     out[k_out] = iv
             except (TypeError, ValueError):
                 pass
-    if "llm_mock_mode" in config:
-        out["mock_mode"] = bool(config["llm_mock_mode"])
 
     # Auto-derive timeout: 60s base + max_output_tokens * 60ms/tok + reasoning buffer
     # Examples:
@@ -1004,18 +1002,6 @@ class MultimodalLLMEngine(BaseEngine):
             from app.engines.multimodal_llm import _build_llm_overrides
             llm_overrides = _build_llm_overrides(config)
             client = get_shared_llm_client(self.settings, overrides=llm_overrides) if llm_overrides else self.client
-            if client.mock_mode:
-                return RecognitionResult(
-                    success=True,
-                    data={"_mock": True, "_batch_size": len(files)},
-                    summary=f"Mock 联合识别 {len(files)} 个文件",
-                    error_code=None,
-                    error_message=None,
-                    raw_response=None,
-                    cost_estimate=0.0,
-                    duration_ms=0,
-                )
-
             meta_str = ", ".join(f"{k}={v}" for k, v in (meta or {}).items() if v is not None)
             user_prompt = user_prompt_template
             if meta_str:
@@ -1089,9 +1075,6 @@ class MultimodalLLMEngine(BaseEngine):
         import time
         overrides = _build_llm_overrides(config)
         client = get_shared_llm_client(self.settings, overrides=overrides) if overrides else self.client
-        # mock 模式: 走 mock 路径也能算"通"
-        if client.mock_mode:
-            return {"ok": True, "message": "mock 模式 (未发起真实调用)", "duration_ms": 0}
         start = time.monotonic()
         try:
             r = await client.chat(

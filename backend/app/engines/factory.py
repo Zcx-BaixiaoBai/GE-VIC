@@ -3,12 +3,10 @@ from typing import Any
 
 from app.engines.base import BaseEngine
 from app.engines.cloud import CloudVisionEngine
-from app.engines.mock import MockEngine
 from app.engines.multimodal_llm import MultimodalLLMEngine
 
 _ENGINE_REGISTRY: dict[str, type[BaseEngine]] = {
     "cloud_api": CloudVisionEngine,
-    "mock": MockEngine,
     "multimodal_llm": MultimodalLLMEngine,
 }
 

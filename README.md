@@ -24,7 +24,7 @@
 
 - **接入层**: FastAPI 0.110+ (Python 3.11+)
 - **任务层**: Celery 5.3+ + Redis
-- **引擎层**: 插件化适配器 (Mock / CloudVision / MultimodalLLM)
+- **引擎层**: 插件化适配器 (CloudVision / MultimodalLLM)
 - **数据层**: PostgreSQL 16 + MinIO
 - **前端**: Vue 3.4 + Vite 5 + Element Plus + Pinia + Vue Router
 - **LLM**: OpenAI 兼容 chat API (DashScope / OpenAI / 自建网关)
@@ -77,23 +77,17 @@ docker compose exec backend alembic upgrade head
 # 1. 启动 PostgreSQL / Redis / MinIO (pgserver + 真实 MinIO 持久化 + redis-server)
 powershell -File scripts\start-services.ps1
 
-# 2. 启动后端 + 前端 (演示模式, 详见下文)
+# 2. 启动后端 + 前端
 powershell -File scripts\start-app.ps1
 ```
 
-### 演示模式 (无需 LLM API key 即可看完整流程)
+### 本地同步模式 (Windows 无需 Celery worker)
 
 | 环境变量 | 默认 | 说明 |
 |---|---|---|
-| `LLM_MOCK_MODE` | `false` | `true` 时 LLM 客户端返回预设运维建议, 不调真实 API |
-| `TASK_SYNC_MODE` | `false` | `true` 时任务在 API 进程内同步执行, 不依赖 Celery worker |
+| `TASK_SYNC_MODE` | `false` | `true` 时任务在 API 进程内同步执行, 不依赖 Celery worker (Windows 本地开发用) |
 
-开启后:
-- `insulator-demo` 算法使用 Mock 引擎 (延迟可控, 返回固定缺陷结构)
-- 选该算法上传图片, 立即看到 SUCCESS + ENRICHED 完整流程
-- 浏览器测试无需任何云凭据
-
-**生产部署 (Linux/Docker 或 cpolar 映射)**: 保持两个开关为 `false`, 由 Celery worker 异步消费 + 真实 LLM 接入。详见 [DEPLOYMENT.md](./docs/DEPLOYMENT.md)。
+**生产部署 (Linux/Docker 或 cpolar 映射)**: 保持 `TASK_SYNC_MODE=false`, 由 Celery worker 异步消费 + 真实 LLM 接入。详见 [DEPLOYMENT.md](./docs/DEPLOYMENT.md)。
 
 ### 手动启动 (无 scripts)
 
@@ -167,7 +161,7 @@ VALUES (
 - [x] `pytest -v` 全部通过 (46/46)
 - [x] `npm run build` 成功
 - [x] 9 个 API 端点全部注册
-- [x] 演示模式 SUCCESS + ENRICHED 端到端可走通
+- [x] 同步模式 SUCCESS + ENRICHED 端到端可走通
 - [ ] `docker compose up -d` 6 服务都 healthy (需本机 Docker)
 - [ ] 浏览器人工测试 (运行 start-app.ps1 后访问 http://127.0.0.1:5173)
 - [ ] 算法表 INSERT 新行后, 新端点可调用

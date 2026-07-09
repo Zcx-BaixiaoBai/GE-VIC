@@ -25,7 +25,7 @@ class AlgorithmCreateIn(BaseModel):
     name: str = Field(..., min_length=1, max_length=128)
     category: str | None = None
     description: str | None = None
-    engine_type: str = Field(..., pattern=r"^(cloud_api|mock|local_model|hikvision_brain|multimodal_llm)$")
+    engine_type: str = Field(..., pattern=r"^(cloud_api|local_model|hikvision_brain|multimodal_llm)$")
     engine_config: dict[str, Any] = Field(default_factory=dict)
     request_schema: dict[str, Any] | None = None
 

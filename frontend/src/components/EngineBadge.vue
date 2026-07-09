@@ -14,7 +14,6 @@ const props = defineProps<{
 
 const labels: Record<string, string> = {
   cloud_api: '云 API',
-  mock: 'Mock',
   hikvision_brain: '海康超脑',
   local_model: '本地模型',
   multimodal_llm: '多模态 LLM',
@@ -23,7 +22,6 @@ const labels: Record<string, string> = {
 const label = computed(() => labels[props.type] || props.type || '未知引擎')
 
 const title = computed(() => {
-  if (props.type === 'mock') return 'Mock 引擎'
   if (props.type === 'multimodal_llm') return '真实 LLM 视觉识别'
   if (props.type === 'cloud_api') return '真实云端识别 API'
   if (props.type === 'local_model') return '真实本地模型推理'
@@ -64,12 +62,4 @@ const title = computed(() => {
 .engine-local_model { color: #0e7490; background: #ecfeff; border-color: #cffafe; }
 .engine-local_model .engine-dot { background: #06b6d4; }
 
-/* Mock: 警示色 (琥珀), 明确区别于 SUCCESS 的绿色 */
-.engine-mock {
-  color: #92400e;
-  background: #fef3c7;
-  border-color: #fde68a;
-  border-style: dashed;
-}
-.engine-mock .engine-dot { background: #d97706; }
 </style>

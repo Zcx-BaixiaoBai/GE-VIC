@@ -276,7 +276,7 @@ function isImageOf(f: QueuedFile): boolean { return (f.raw?.type || '').startsWi
 function isVideoOf(f: QueuedFile): boolean { return (f.raw?.type || '').startsWith('video/') }
 
 function engineTypeLabel(t: string): string {
-  const m: Record<string, string> = { cloud_api: '云 API', mock: 'Mock', hikvision_brain: '海康超脑', local_model: '本地模型', multimodal_llm: '多模态 LLM' }
+  const m: Record<string, string> = { cloud_api: '云 API', hikvision_brain: '海康超脑', local_model: '本地模型', multimodal_llm: '多模态 LLM' }
   return m[t] || t
 }
 function formatSize(n: number): string {

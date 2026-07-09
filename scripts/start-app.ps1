@@ -14,12 +14,11 @@ $env:MINIO_SECURE = "false"
 $env:CELERY_BROKER_URL = "redis://127.0.0.1:6379/0"
 $env:PYTHONPATH = "."
 
-# Windows 演示模式: 跳过 Celery worker, 任务在 API 进程内直接跑
+# Windows 本地模式: 跳过 Celery worker, 任务在 API 进程内直接跑
 # (生产部署用 Linux/Docker 时改回 false, 由 Celery worker 异步消费)
-$env:LLM_MOCK_MODE = "true"
 $env:TASK_SYNC_MODE = "true"
 
-Write-Host "Starting GE-VIC services (Windows demo mode)..." -ForegroundColor Green
+Write-Host "Starting GE-VIC services (Windows local mode)..." -ForegroundColor Green
 
 Start-Process -FilePath "$PSScriptRoot\..\backend\.venv\Scripts\python.exe" `
     -ArgumentList "-m","uvicorn","app.main:app","--host","127.0.0.1","--port","8000" `
@@ -41,10 +40,6 @@ if ($npmCmd) {
 }
 
 Write-Host ""
-Write-Host "Demo mode enabled (LLM_MOCK_MODE=true, TASK_SYNC_MODE=true):" -ForegroundColor Yellow
-Write-Host "  - 使用 insulator-demo 算法 (Mock 引擎) 可看到完整 SUCCESS 流程" -ForegroundColor Yellow
-Write-Host "  - LLM 富化返回预设的运维建议 (无需真实 LLM API key)" -ForegroundColor Yellow
-Write-Host "  - 任务在 API 进程内同步执行 (不依赖 Celery worker)" -ForegroundColor Yellow
 Write-Host ""
 Write-Host "Open http://127.0.0.1:5173 in your browser." -ForegroundColor Green
 Write-Host "API docs: http://127.0.0.1:8000/docs" -ForegroundColor Green

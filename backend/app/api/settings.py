@@ -21,7 +21,6 @@ class LLMConfigOut(BaseModel):
     model: str
     max_input_tokens: int
     max_output_tokens: int
-    mock_mode: bool
     runtime_max_output_tokens: int | None = None
     runtime_max_input_tokens: int | None = None
     runtime_overrides: dict[str, bool] = Field(default_factory=dict, description="哪些值当前被 runtime 覆盖了")
@@ -51,7 +50,6 @@ async def get_llm_config() -> LLMConfigOut:
         model=settings.llm_model,
         max_input_tokens=rt_in if isinstance(rt_in, int) else settings.llm_max_input_tokens,
         max_output_tokens=rt_out if isinstance(rt_out, int) else settings.llm_max_output_tokens,
-        mock_mode=settings.llm_mock_mode,
         runtime_max_output_tokens=rt_out if isinstance(rt_out, int) else None,
         runtime_max_input_tokens=rt_in if isinstance(rt_in, int) else None,
         runtime_overrides={
@@ -104,7 +102,7 @@ class LLMConfigUpdateIn(BaseModel):
 async def update_llm_config(body: LLMConfigUpdateIn) -> LLMConfigOut:
     """更新运行时 LLM 配置 (立即生效, 持久化到 .runtime-config.json).
 
-    注意: 只能改 max tokens. base_url/model/mock_mode 来自环境变量, 改需重启.
+    注意: 只能改 max tokens. base_url/model 来自环境变量, 改需重启.
     """
     updates: dict[str, int] = {}
     if body.max_input_tokens is not None:
